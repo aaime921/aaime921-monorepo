@@ -1,1 +1,107 @@
-IyBSZXF1aXJlbWVudHM6IEdyYWNlZnVsIGRlZ3JhZGF0aW9uIGZvciB0aGUgRXVmeSBzY2FsZSBjb25uZWN0b3IKCklzc3VlOiAjNgoKIyMgU3VtbWFyeQoKVGhlIEJPIHdhbnRzIHRoZSBFdWZ5IHNjYWxlIGNvbm5lY3RvciB0byBoYW5kbGUgdGVtcG9yYXJ5IEV1ZnkgQVBJCm91dGFnZXMgZ3JhY2VmdWxseSBpbnN0ZWFkIG9mIGZhaWxpbmcgb3V0cmlnaHQuIFdoZW4gdGhlIEV1ZnkgQVBJIHJldHVybnMKYSBgNTAzYCAodGVtcG9yYXJpbHkgdW5hdmFpbGFibGUpLCB0aGUgY29ubmVjdG9yIHNob3VsZCBlbnRlciBhCioqRGVncmFkZWQqKiBzdGF0ZSB0aGF0IHN0aWxsIGxldHMgY2FsbGVycyByZWFkIHRoZSBtb3N0IHJlY2VudCBjYWNoZWQKcmVhZGluZ3MgKHVwIHRvIHRoZSBsYXN0IDcgZGF5cykgcmF0aGVyIHRoYW4gZXJyb3JpbmcsIHNob3VsZCBsZXQgYSB1c2VyCm1hbnVhbGx5IHJldHJ5IHJhdGhlciB0aGFuIHdhaXQgZm9yIHRoZSBuZXh0IHNjaGVkdWxlZCBwb2xsLCBhbmQgc2hvdWxkCnJlY29yZCB3aGVuIGRlZ3JhZGF0aW9uIHN0YXJ0ZWQuIFdoZW4gdGhlIEV1ZnkgQVBJIHN0YXJ0cyByZXNwb25kaW5nCm5vcm1hbGx5IGFnYWluLCB0aGUgY29ubmVjdG9yIHNob3VsZCByZXR1cm4gdG8gaXRzIG5vcm1hbCAqKkNvbm5lY3RlZCoqCnN0YXRlIG9uIGl0cyBvd24uIFRoaXMgaXNzdWUgaXMgYWxzbyBleHBsaWNpdGx5IGEgcGlwZWxpbmUgc21va2UgdGVzdCAocGVyCnRoZSBpc3N1ZSdzIHN0YXRlZCBwdXJwb3NlOiAiVGVzdCBjb21wbGV0ZSBwaXBlbGluZTogQkEg4oaSIEFyY2hpdGVjdCDihpIgUUEsCmluY2x1ZGluZyBUZWFtIExlYWQgUm91dGVyIGZvciByb3V0aW5nIGRlY2lzaW9ucyIpLCBzbyB0aGlzIGRvYyB0cmVhdHMgdGhlCmZlYXR1cmUgcmVxdWVzdCBpdHNlbGYgYXQgZmFjZSB2YWx1ZSBhbmQga2VlcHMgc2NvcGUgdG8gZXhhY3RseSB3aGF0J3MKZGVzY3JpYmVkIGluIHRoZSBpc3N1ZS4KCk5vdGUgZm9yIHRoZSBBcmNoaXRlY3Q6IG5vICJFdWZ5IHNjYWxlIGNvbm5lY3RvciIgb3IgYW55IGNvbm5lY3RvcgphYnN0cmFjdGlvbiBjdXJyZW50bHkgZXhpc3RzIGFueXdoZXJlIGluIHRoaXMgcmVwb3NpdG9yeSAoY29uZmlybWVkIGJ5CnNlYXJjaGluZyB0aGUgY29kZWJhc2UpIC0tIHRoaXMgaXMgbmV3IGZ1bmN0aW9uYWxpdHksIGJ1aWx0IGZyb20gc2NyYXRjaAp1bmRlciBgcHJvamVjdHMvYWdlbnQtcGlwZWxpbmUvYCwgbm90IGEgbW9kaWZpY2F0aW9uIG9mIGV4aXN0aW5nIGNvZGUuCgojIyBTY29wZQoKLSBBIGNvbm5lY3RvciBjb21wb25lbnQgdGhhdCB0YWxrcyB0byB0aGUgRXVmeSBzY2FsZSBBUEkgYW5kIHRyYWNrcyBpdHMKICBvd24gY29ubmVjdGlvbiBzdGF0ZSwgd2l0aCBhdCBsZWFzdCB0d28gbmFtZWQgc3RhdGVzOiAqKkNvbm5lY3RlZCoqCiAgKG5vcm1hbCBvcGVyYXRpb24pIGFuZCAqKkRlZ3JhZGVkKiogKEFQSSB0ZW1wb3JhcmlseSB1bmF2YWlsYWJsZSkuCi0gRGV0ZWN0aW9uIG9mIGEgYDUwM2AgcmVzcG9uc2UgZnJvbSB0aGUgRXVmeSBBUEkgYXMgdGhlIHRyaWdnZXIgdG8KICB0cmFuc2l0aW9uIGZyb20gQ29ubmVjdGVkIHRvIERlZ3JhZGVkLgotIFdoaWxlIERlZ3JhZGVkLCByZWFkcyBjb250aW51ZSB0byBzdWNjZWVkIGJ5IHNlcnZpbmcgdGhlIGxhc3Qga25vd24tZ29vZAogIGNhY2hlZCByZWFkaW5ncywgbGltaXRlZCB0byBkYXRhIG5vIG9sZGVyIHRoYW4gNyBkYXlzLiBSZWFkcyBmb3IgZGF0YQogIG9sZGVyIHRoYW4gNyBkYXlzLCBvciB3aGVuIG5vIGNhY2hlZCBkYXRhIGV4aXN0cyB5ZXQsIGFyZSBvdXQgb2Ygc2NvcGUKICBmb3IgInN1Y2NlZWRpbmciIC0tIGJlaGF2aW9yIGZvciB0aGF0IGVkZ2UgY2FzZSBpcyBhbiBvcGVuIHF1ZXN0aW9uIGJlbG93LgotIEEgbWFudWFsIHJldHJ5IGFjdGlvbiBhIHVzZXIvb3BlcmF0b3IgY2FuIHRyaWdnZXIgd2hpbGUgRGVncmFkZWQsIHdoaWNoCiAgcmUtYXR0ZW1wdHMgY29udGFjdCB3aXRoIHRoZSBFdWZ5IEFQSSBpbW1lZGlhdGVseSByYXRoZXIgdGhhbiB3YWl0aW5nCiAgZm9yIHRoZSBjb25uZWN0b3IncyBub3JtYWwgcG9sbGluZyBpbnRlcnZhbC4KLSBBIGxvZyBlbnRyeSByZWNvcmRlZCBhdCB0aGUgbW9tZW50IHRoZSBjb25uZWN0b3IgdHJhbnNpdGlvbnMgaW50bwogIERlZ3JhZGVkLCBpbmNsdWRpbmcgdGhlIHRpbWVzdGFtcCBvZiB0aGF0IHRyYW5zaXRpb24uCi0gQXV0b21hdGljIHJlY292ZXJ5OiBvbmNlIHRoZSBFdWZ5IEFQSSByZXNwb25kcyBub3JtYWxseSAobm9uLTUwMykgYWdhaW4KICAtLSB3aGV0aGVyIHZpYSB0aGUgbm9ybWFsIHBvbGxpbmcgaW50ZXJ2YWwgb3IgYSBtYW51YWwgcmV0cnkgLS0gdGhlCiAgY29ubmVjdG9yIHRyYW5zaXRpb25zIGJhY2sgdG8gQ29ubmVjdGVkIG9uIGl0cyBvd24sIHdpdGhvdXQgcmVxdWlyaW5nCiAgYW55IG90aGVyIG1hbnVhbCBzdGVwIGJleW9uZCB0aGUgcmV0cnkgaXRzZWxmLgotIEF0IGxlYXN0IG9uZSBhdXRvbWF0ZWQgdGVzdCBwZXIgYWNjZXBhbmNlIGNyaXRlcmlvbiBiZWxvdy4KCiMjIyBPdXQgb2Ygc2NvcGUKCi0gQW55IEV1ZnkgQVBJIGVycm9yIGNvbmRpdGlvbiBvdGhlciB0aGFuIGA1MDNgIChlLmcuIGF1dGggZmFpbHVyZXMsCiAgbWFsZm9ybWVkIHJlc3BvbnNlcywgbmV0d29yayB0aW1lb3V0cykgLS0gdGhpcyBpc3N1ZSBpcyBzY29wZWQKICBzcGVjaWZpY2FsbHkgdG8gdGhlICJ0ZW1wb3JhcmlseSB1bmF2YWlsYWJsZSIgY2FzZSB0aGUgQk8gZGVzY3JpYmVkLgotIEEgVUkvZnJvbnQtZW5kIGZvciB0aGUgIm1hbnVhbCByZXRyeSBidXR0b24iIC0tIHNlZSBvcGVuIHF1ZXN0aW9ucyBiZWxvdwogIGZvciB3aGF0IHRoaXMgbWVhbnMgYXQgdGhlIGludGVyZmFjZSBsZXZlbCB0aGlzIHByb2plY3QgYWN0dWFsbHkgaGFzLgotIENoYW5naW5nIHRoZSBjYWNoZSdzIHJldGVudGlvbiBwb2xpY3kgYmV5b25kIHdoYXQncyBuZWVkZWQgdG8gc2VydmUKICB0aGUgbGFzdCA3IGRheXMgd2hpbGUgRGVncmFkZWQgKGUuZy4gdGhpcyBkb2MgZG9lc24ndCByZXF1aXJlIHB1cmdpbmcKICBvbGRlciBjYWNoZWQgZGF0YSkuCi0gQW55IGNvbm5lY3RvciBvdGhlciB0aGFuIHRoZSBFdWZ5IHNjYWxlIGNvbm5lY3Rvci4KLSBBbGVydGluZy9ub3RpZmljYXRpb24gb24gZGVncmFkYXRpb24gYmV5b25kIHRoZSBsb2cgZW50cnkgaXRzZWxmIChlLmcuCiAgbm8gcmVxdWlyZW1lbnQgaGVyZSBmb3IgZW1haWxzLCBwYWdlcywgb3IgZGFzaGJvYXJkcykuCgojIyBBY2NlcHRhbmNlIGNyaXRlcmlhCgoxLiBXaGVuIHRoZSBFdWZ5IEFQSSByZXR1cm5zIGEgYDUwM2AgcmVzcG9uc2UsIHRoZSBjb25uZWN0b3IgdHJhbnNpdGlvbnMKICAgZnJvbSBDb25uZWN0ZWQgdG8gRGVncmFkZWQuCjIuIFdoaWxlIERlZ3JhZGVkLCByZWFkcyByZXR1cm4gY2FjaGVkIGRhdGEgZnJvbSB0aGUgbGFzdCA3IGRheXMgaW5zdGVhZAogICBvZiBmYWlsaW5nLgozLiBXaGlsZSBEZWdyYWRlZCwgYSBtYW51YWwgcmV0cnkgYWN0aW9uIGlzIGF2YWlsYWJsZSB0aGF0IGltbWVkaWF0ZWx5CiAgIHJlLWF0dGVtcHRzIGNvbnRhY3Qgd2l0aCB0aGUgRXVmeSBBUEkgKHJhdGhlciB0aGFuIHdhaXRpbmcgZm9yIHRoZSBuZXh0CiAgIHNjaGVkdWxlZCBwb2xsKS4KNC4gVGhlIG1vbWVudCB0aGUgY29ubmVjdG9yIHRyYW5zaXRpb25zIGludG8gRGVncmFkZWQsIGEgbG9nIGVudHJ5IGlzCiAgIHJlY29yZGVkIHRoYXQgaW5jbHVkZXMgdGhlIHRpbWVzdGFtcCBvZiB0aGF0IHRyYW5zaXRpb24uCjUuIE9uY2UgdGhlIEV1ZnkgQVBJIHJlc3BvbmRzIG5vcm1hbGx5IChhIG5vbi01MDMgcmVzcG9uc2UpIGFnYWluLCB0aGUKICAgY29ubmVjdG9yIHRyYW5zaXRpb25zIGJhY2sgdG8gQ29ubmVjdGVkIGF1dG9tYXRpY2FsbHksIHdpdGggbm8gbWFudWFsCiAgIHN0ZXAgYmV5b25kIHRoZSByZXRyeSBpdHNlbGYuCjYuIEF1dG9tYXRlZCB0ZXN0cyBjb3ZlcjogdGhlIENvbm5lY3RlZOKGklRlZ3JhZGVkIHRyYW5zaXRpb24gb24gYSBgNTAzYCwKICAgc2VydmluZyBjYWNoZWQgZGF0YSAod2l0aGluIDcgZGF5cykgd2hpbGUgRGVncmFkZWQsIHRoZSBtYW51YWwgcmV0cnkKICAgcGF0aCwgdGhlIGRlZ3JhZGF0aW9uIGxvZyBlbnRyeSwgYW5kIHRoZSBEZWdyYWRlZOKGklRvbm5lY3RlZCByZWNvdmVyeQogICBwYXRoLgo3LiBBbGwgYXV0b21hdGVkIHRlc3RzICh4ZXhpc3RpbmcgYW5kIG5ldykgY2FuIGJlIHJ1biB2aWEgYSBzaW5nbGUKICAgZG9jdW1lbnRlZCBjb21tYW5kIGFuZCBwYXNzIGluIHRoaXMgZW52aXJvbm1lbnQuCgojIyBPcGVuIHF1ZXN0aW9ucwoKTm90aGluZyBoZXJlIGJsb2NrcyBoYW5kb2ZmIHRvIHRoZSBBcmNoaXRlY3QgLS0gdGhlc2UgYXJlIGZsYWdnZWQgYXMKZGVzaWduLWxldmVsIHF1ZXN0aW9ucyBmb3IgdGhlIEFyY2hpdGVjdCB0byByZXNvbHZlLCBub3QgaXRlbXMgdGhhdCBuZWVkCnRoZSBCTyBmaXJzdCwgc2luY2UgdGhlIEJPJ3MgaW50ZW50IGlzIGFscmVhZHkgY2xlYXIgZnJvbSB0aGUgaXNzdWUncwphY2NlcHRhbmNlIGNyaXRlcmlhOgoKLSAqKiJNYW51YWwgcmV0cnkgYnV0dG9uIioqOiBgcHJvamVjdHMvYWdlbnQtcGlwZWxpbmUvYCBjdXJyZW50bHkgb25seSBoYXMKICBhIENMSSBlbnRyeSBwb2ludCAoYGhlbGxvLnB5YCksIHdpdGggbm8gZXhpc3RpbmcgVUkgb2YgYW55IGtpbmQuIFRoZSBCTydzCiAgd29yZGluZyAoImJ1dHRvbiIpIHN1Z2dlc3RzIGFuIGludGVyYWN0aXZlIFVJLCBidXQgbm90aGluZyBpbiB0aGlzCiAgcHJvamVjdCBoYXMgb25lIHlldC4gVGhlIEFyY2hpdGVjdCBzaG91bGQgZGVjaWRlIHRoZSBjb25jcmV0ZSBmb3JtIHRoaXMKICB0YWtlcyBpbiB0aGlzIGNvZGViYXNlIChlLmcuIGEgQ0xJIHN1YmNvbW1hbmQvZmxhZyB0aGF0IHRyaWdnZXJzIGEKICByZXRyeSkgcmF0aGVyIHRoYW4gQkEgYXNzdW1pbmcgYSBzcGVjaWZpYyBpbXBsZW1lbnRhdGlvbi4KLSAqKk5vIGNhY2hlZCBkYXRhIHdpdGhpbiA3IGRheXMgYXZhaWxhYmxlKio6IHRoZSBhY2NlcHRhbmNlIGNyaXRlcmlhCiAgZG9uJ3Qgc2F5IHdoYXQgYSByZWFkIHNob3VsZCBkbyB3aGlsZSBEZWdyYWRlZCBpZiB0aGVyZSdzIG5vIGNhY2hlZAogIHJlYWRpbmcgd2l0aGluIHRoZSBsYXN0IDcgZGF5cyB5ZXQgKGUuZy4gYSBicmFuZC1uZXcgY29ubmVjdG9yIHRoYXQKICBkZWdyYWRlcyBiZWZvcmUgZXZlciBzdWNjZWVkaW5nIG9uY2UpLiBUaGUgQXJjaGl0ZWN0L0RldmVsb3BlciBzaG91bGQKICBwaWNrIGEgZGVmaW5lZCBiZWhhdmlvciAoZS5nLiBhIGNsZWFyICJubyBkYXRhIGF2YWlsYWJsZSIgcmVzdWx0KSBhbmQKICBRQSBzaG91bGQgdGVzdCBpdCwgYnV0IGl0IGRvZXNuJ3QgY2hhbmdlIHRoZSBhY2NlcHRhbmNlIGNyaXRlcmlhIGFib3ZlCiAgYW5kIGRvZXNuJ3QgbmVlZCBCTyBpbnB1dCB0byBwcm9jZWVkLgotICoqUG9sbGluZyBpbnRlcnZhbCoqOiB0aGUgbm9ybWFsICgobm9uLWRlZ3JhZGVkKSBwb2xsaW5nIGludGVydmFsIGlzbid0CiAgc3BlY2lmaWVkIGFueXdoZXJlIGluIHRoZSBpc3N1ZSBvciBleGlzdGluZyBwcm9qZWN0IGRvY3MuIEl0IGRvZXNuJ3QKICBibG9jayB0aGlzIGZlYXR1cmUncyByZXF1aXJlbWVudHMgKHRoZSBtYW51YWwgcmV0cnkgZXhpc3RzIHByZWNpc2VseSBzbwogIHJlY292ZXJ5IGRvZXNuJ3QgZGVwZW5kIG9uIGl0KSwgYnV0IHRoZSBBcmNoaXRlY3QvRGV2ZWxvcGVyIHdpbGwgbmVlZCB0bwogIHBpY2sgb3IgY29uZmlybSBvbmUuCg==
+# Requirements: Graceful degradation for the Eufy scale connector
+
+Issue: #6
+
+## Summary
+
+The BO wants the Eufy scale connector to handle temporary Eufy API
+outages gracefully instead of failing outright. When the Eufy API returns
+a `503` (temporarily unavailable), the connector should enter a
+**Degraded** state that still lets callers read the most recent cached
+readings (up to the last 7 days) rather than erroring, should let a user
+manually retry rather than wait for the next scheduled poll, and should
+record when degradation started. When the Eufy API starts responding
+normally again, the connector should return to its normal **Connected**
+state on its own. This issue is also explicitly a pipeline smoke test (per
+the issue's stated purpose: "Test complete pipeline: BA → Architect → QA,
+including Team Lead Router for routing decisions"), so this doc treats the
+feature request itself at face value and keeps scope to exactly what's
+described in the issue.
+
+Note for the Architect: no "Eufy scale connector" or any connector
+abstraction currently exists anywhere in this repository (confirmed by
+searching the codebase) — this is new functionality, built from scratch
+under `projects/agent-pipeline/`, not a modification of existing code.
+
+## Scope
+
+- A connector component that talks to the Eufy scale API and tracks its
+  own connection state, with at least two named states: **Connected**
+  (normal operation) and **Degraded** (API temporarily unavailable).
+- Detection of a `503` response from the Eufy API as the trigger to
+  transition from Connected to Degraded.
+- While Degraded, reads continue to succeed by serving the last known-good
+  cached readings, limited to data no older than 7 days. Reads for data
+  older than 7 days, or when no cached data exists yet, are out of scope
+  for "succeeding" — behavior for that edge case is an open question below.
+- A manual retry action a user/operator can trigger while Degraded, which
+  re-attempts contact with the Eufy API immediately rather than waiting
+  for the connector's normal polling interval.
+- A log entry recorded at the moment the connector transitions into
+  Degraded, including the timestamp of that transition.
+- Automatic recovery: once the Eufy API responds normally (non-503) again
+  — whether via the normal polling interval or a manual retry — the
+  connector transitions back to Connected on its own, without requiring
+  any other manual step beyond the retry itself.
+- At least one automated test per acceptance criterion below.
+
+### Out of scope
+
+- Any Eufy API error condition other than `503` (e.g. auth failures,
+  malformed responses, network timeouts) — this issue is scoped
+  specifically to the "temporarily unavailable" case the BO described.
+- A UI/front-end for the "manual retry button" — see open questions below
+  for what this means at the interface level this project actually has.
+- Changing the cache's retention policy beyond what's needed to serve the
+  last 7 days while Degraded (e.g. this doc doesn't require purging older
+  cached data).
+- Any connector other than the Eufy scale connector.
+- Alerting/notification on degradation beyond the log entry itself (e.g.
+  no requirement here for emails, pages, or dashboards).
+
+## Acceptance criteria
+
+1. When the Eufy API returns a `503` response, the connector transitions
+   from Connected to Degraded.
+2. While Degraded, reads return cached data from the last 7 days instead
+   of failing.
+3. While Degraded, a manual retry action is available that immediately
+   re-attempts contact with the Eufy API (rather than waiting for the next
+   scheduled poll).
+4. The moment the connector transitions into Degraded, a log entry is
+   recorded that includes the timestamp of that transition.
+5. Once the Eufy API responds normally (a non-503 response) again, the
+   connector transitions back to Connected automatically, with no manual
+   step beyond the retry itself.
+6. Automated tests cover: the Connected→Degraded transition on a `503`,
+   serving cached data (within 7 days) while Degraded, the manual retry
+   path, the degradation log entry, and the Degraded→Connected recovery
+   path.
+7. All automated tests (existing and new) can be run via a single
+   documented command and pass in this environment.
+
+## Open questions
+
+Nothing here blocks handoff to the Architect — these are flagged as
+design-level questions for the Architect to resolve, not items that need
+the BO first, since the BO's intent is already clear from the issue's
+acceptance criteria:
+
+- **"Manual retry button"**: `projects/agent-pipeline/` currently only has
+  a CLI entry point (`hello.py`), with no existing UI of any kind. The BO's
+  wording ("button") suggests an interactive UI, but nothing in this
+  project has one yet. The Architect should decide the concrete form this
+  takes in this codebase (e.g. a CLI subcommand/flag that triggers a
+  retry) rather than BA assuming a specific implementation.
+- **No cached data within 7 days available**: the acceptance criteria
+  don't say what a read should do while Degraded if there's no cached
+  reading within the last 7 days yet (e.g. a brand-new connector that
+  degrades before ever succeeding once). The Architect/Developer should
+  pick a defined behavior (e.g. a clear "no data available" result) and
+  QA should test it, but it doesn't change the acceptance criteria above
+  and doesn't need BO input to proceed.
+- **Polling interval**: the normal (non-degraded) polling interval isn't
+  specified anywhere in the issue or existing project docs. It doesn't
+  block this feature's requirements (the manual retry exists precisely so
+  recovery doesn't depend on it), but the Architect/Developer will need to
+  pick or confirm one.
