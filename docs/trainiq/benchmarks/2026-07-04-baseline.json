@@ -1,0 +1,110 @@
+{
+  "meta": {
+    "run_at_utc": "2026-07-04T20:40:13.175561+00:00",
+    "python_version": "3.12.3",
+    "platform": "Linux-6.18.5-x86_64-with-glibc2.39",
+    "trainiq_schema_version": 3,
+    "caveat": "In-sandbox measurement using in-memory mock connectors. No real network I/O. Absolute numbers are NOT representative of production hardware or real provider latency \u2014 see this script's module docstring."
+  },
+  "migration": {
+    "fresh_migration_s": 0.0462,
+    "schema_version": 3
+  },
+  "startup": {
+    "cold_startup_s": 0.0471
+  },
+  "normalization_throughput": [
+    {
+      "n": 10,
+      "total_s": 0.0002,
+      "records_per_sec": 46288.8
+    },
+    {
+      "n": 100,
+      "total_s": 0.0006,
+      "records_per_sec": 166072.1
+    },
+    {
+      "n": 1000,
+      "total_s": 0.0064,
+      "records_per_sec": 155245.2
+    }
+  ],
+  "sqlite_write_throughput": [
+    {
+      "n": 10,
+      "total_s": 0.0025,
+      "writes_per_sec": 4068.9
+    },
+    {
+      "n": 100,
+      "total_s": 0.0046,
+      "writes_per_sec": 21536.6
+    },
+    {
+      "n": 1000,
+      "total_s": 0.0156,
+      "writes_per_sec": 63998.1
+    }
+  ],
+  "full_sync_no_profile": [
+    {
+      "n": 10,
+      "with_profile": false,
+      "total_s": 0.0096,
+      "activities_per_sec": 1036.6,
+      "records_upserted": 10
+    },
+    {
+      "n": 100,
+      "with_profile": false,
+      "total_s": 0.0131,
+      "activities_per_sec": 7628.7,
+      "records_upserted": 100
+    },
+    {
+      "n": 1000,
+      "with_profile": false,
+      "total_s": 0.0414,
+      "activities_per_sec": 24151.3,
+      "records_upserted": 1000
+    }
+  ],
+  "full_sync_with_profile": [
+    {
+      "n": 10,
+      "with_profile": true,
+      "total_s": 0.0097,
+      "activities_per_sec": 1034.4,
+      "records_upserted": 10
+    },
+    {
+      "n": 100,
+      "with_profile": true,
+      "total_s": 0.0125,
+      "activities_per_sec": 8010.9,
+      "records_upserted": 100
+    },
+    {
+      "n": 1000,
+      "with_profile": true,
+      "total_s": 0.042,
+      "activities_per_sec": 23833.3,
+      "records_upserted": 1000
+    }
+  ],
+  "memory": [
+    {
+      "n": 10,
+      "peak_memory_kb": 9.7
+    },
+    {
+      "n": 100,
+      "peak_memory_kb": 33.3
+    },
+    {
+      "n": 1000,
+      "peak_memory_kb": 39.1
+    }
+  ]
+}

@@ -1,0 +1,33 @@
+[project]
+name = "trainiq"
+version = "0.1.0"
+description = "Personal macOS training-data aggregation and evidence-based coaching system."
+requires-python = ">=3.11"
+dependencies = [
+    "keyring>=25.0",
+    "loguru>=0.7",
+    "stravalib>=2.5",
+    "requests>=2.31",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+packaging = [
+    "pyinstaller>=6.0",
+]
+
+[project.scripts]
+trainiq = "trainiq.app:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["trainiq*"]

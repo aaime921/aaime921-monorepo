@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+
+# Sibling project repos living under this same Desktop/ClaudeAI workspace
+/trainiq/

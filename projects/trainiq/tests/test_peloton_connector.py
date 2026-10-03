@@ -1,0 +1,757 @@
+"""
+Tests for Epic 3 — Peloton Connector (Features 3.1, 3.2, 3.3, 3.4).
+
+Every test uses a fake HTTP session — this sandbox cannot reach
+api.onepeloton.com (see module docstring in trainiq/connectors/peloton.py).
+"""
+
+from __future__ import annotations
+
+import base64
+import hashlib
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+import pytest
+
+from trainiq.connectors.base import ConnectorState
+from trainiq.connectors.peloton import (
+    CRED_EMAIL,
+    CRED_MANUAL_BEARER_TOKEN,
+    CRED_OAUTH_ACCESS_TOKEN,
+    CRED_OAUTH_EXPIRES_AT,
+    CRED_OAUTH_REFRESH_TOKEN,
+    CRED_PASSWORD,
+    CRED_SESSION_EXPIRES_AT,
+    CRED_SESSION_ID,
+    OAUTH_TOKEN_URL,
+    PROVIDER,
+    PelotonConnector,
+    PelotonHTTPError,
+    PelotonOAuthRejected,
+    generate_pkce_pair,
+)
+from trainiq.credentials.store import CredentialStore
+from trainiq.storage.schema import open_db
+from trainiq.sync.engine import AuthenticationError, SynchronizationEngine, TransientError
+
+
+@pytest.fixture(autouse=True)
+def in_memory_keyring():
+    import keyring
+    from keyring.backends.fail import Keyring as FailKeyring
+
+    class _InMemoryKeyring(FailKeyring):
+        priority = 1
+
+        def __init__(self):
+            self._store: dict[tuple[str, str], str] = {}
+
+        def set_password(self, service, username, password):
+            self._store[(service, username)] = password
+
+        def get_password(self, service, username):
+            return self._store.get((service, username))
+
+        def delete_password(self, service, username):
+            key = (service, username)
+            if key not in self._store:
+                from keyring.errors import PasswordDeleteError
+                raise PasswordDeleteError("not found")
+            del self._store[key]
+
+    original = keyring.get_keyring()
+    keyring.set_keyring(_InMemoryKeyring())
+    yield
+    keyring.set_keyring(original)
+
+
+@pytest.fixture
+def db(tmp_path: Path):
+    conn = open_db(tmp_path / "trainiq.db")
+    yield conn
+    conn.close()
+
+
+@pytest.fixture
+def credential_store(db):
+    return CredentialStore(conn=db)
+
+
+class FakeResponse:
+    def __init__(self, status_code: int, json_body: dict | None = None, headers: dict | None = None):
+        self.status_code = status_code
+        self._json_body = json_body or {}
+        self.headers = headers or {}
+
+    def json(self):
+        return self._json_body
+
+
+class FakePelotonSession:
+    def __init__(self):
+        self.post_calls: list[dict] = []
+        self.get_calls: list[dict] = []
+        self._post_response: FakeResponse | None = None
+        self._get_responses: list[FakeResponse] = []
+
+    def script_post_response(self, response: FakeResponse):
+        self._post_response = response
+
+    def script_get_response(self, response: FakeResponse):
+        self._get_responses.append(response)
+
+    def post(self, url, json=None, headers=None):
+        self.post_calls.append({"url": url, "json": json, "headers": headers})
+        return self._post_response
+
+    def get(self, url, params=None, headers=None):
+        self.get_calls.append({"url": url, "params": params, "headers": headers})
+        return self._get_responses.pop(0)
+
+
+def _login_success_response(session_id="session-abc"):
+    return FakeResponse(200, {"session_id": session_id, "user_id": "u1"})
+
+
+# --- Feature 3.1: Authentication (automated path) ---------------------------
+
+def test_authenticate_returns_false_when_never_connected(credential_store):
+    fake = FakePelotonSession()
+    connector = PelotonConnector(credential_store, session=fake)
+    assert connector.authenticate() is False
+    assert fake.post_calls == []
+
+
+def test_automated_login_success_persists_session(credential_store):
+    credential_store.set(PROVIDER, CRED_EMAIL, "athlete@example.com")
+    credential_store.set(PROVIDER, CRED_PASSWORD, "pw")
+    fake = FakePelotonSession()
+    fake.script_post_response(_login_success_response("session-xyz"))
+    connector = PelotonConnector(credential_store, session=fake)
+
+    assert connector.authenticate() is True
+    assert credential_store.get(PROVIDER, CRED_SESSION_ID) == "session-xyz"
+    assert fake.post_calls[0]["headers"]["peloton-platform"] == "web"
+    assert fake.post_calls[0]["json"] == {"username_or_email": "athlete@example.com", "password": "pw"}
+
+
+def test_automated_login_reuses_valid_unexpired_session(credential_store):
+    future_expiry = int((datetime.now(timezone.utc) + timedelta(minutes=30)).timestamp())
+    credential_store.set(PROVIDER, CRED_EMAIL, "a@b.com")
+    credential_store.set(PROVIDER, CRED_PASSWORD, "pw")
+    credential_store.set(PROVIDER, CRED_SESSION_ID, "existing-session")
+    credential_store.set(PROVIDER, CRED_SESSION_EXPIRES_AT, str(future_expiry))
+    fake = FakePelotonSession()
+    connector = PelotonConnector(credential_store, session=fake)
+
+    assert connector.authenticate() is True
+    assert fake.post_calls == []
+
+
+def test_automated_login_rejected_returns_false_this_is_the_documented_failure_mode(credential_store):
+    """This 403 is the literal, dated, documented Milestone 2 failure
+    ('Endpoint no longer accepting requests') — not a hypothetical."""
+    credential_store.set(PROVIDER, CRED_EMAIL, "a@b.com")
+    credential_store.set(PROVIDER, CRED_PASSWORD, "pw")
+    fake = FakePelotonSession()
+    fake.script_post_response(FakeResponse(403, {"message": "Access forbidden. Endpoint no longer accepting requests."}))
+    connector = PelotonConnector(credential_store, session=fake)
+
+    assert connector.authenticate() is False
+
+
+def test_automated_login_rate_limited_honors_retry_after_per_adr_037(credential_store):
+    credential_store.set(PROVIDER, CRED_EMAIL, "a@b.com")
+    credential_store.set(PROVIDER, CRED_PASSWORD, "pw")
+    fake = FakePelotonSession()
+    fake.script_post_response(FakeResponse(429, {}, headers={"Retry-After": "300"}))
+    connector = PelotonConnector(credential_store, session=fake)
+
+    with pytest.raises(TransientError) as excinfo:
+        connector.authenticate()
+    assert excinfo.value.retry_after_s == 300.0
+
+
+def test_automated_login_unexpected_status_raises_http_error(credential_store):
+    credential_store.set(PROVIDER, CRED_EMAIL, "a@b.com")
+    credential_store.set(PROVIDER, CRED_PASSWORD, "pw")
+    fake = FakePelotonSession()
+    fake.script_post_response(FakeResponse(418, {}))
+    connector = PelotonConnector(credential_store, session=fake)
+
+    with pytest.raises(PelotonHTTPError):
+        connector.authenticate()
+
+
+# --- Feature 3.2: Recovery path ---------------------------------------------
+
+def test_request_manual_recovery_returns_real_instructions_not_the_default_stub(credential_store):
+    """Peloton is the first connector where this must NOT be the Connector
+    base class's generic 'no recovery procedure defined' stub."""
+    fake = FakePelotonSession()
+    connector = PelotonConnector(credential_store, session=fake)
+    message = connector.request_manual_recovery()
+    assert "Bearer Token" in message
+    assert message != "No manual recovery procedure is defined for this connector."
+
+
+def test_submit_manual_recovery_rejects_empty_token(credential_store):
+    fake = FakePelotonSession()
+    connector = PelotonConnector(credential_store, session=fake)
+    with pytest.raises(ValueError):
+        connector.submit_manual_recovery("")
+
+
+def test_authenticate_prefers_manual_token_when_in_recovery_required_state(credential_store):
+    """Core dual-path behavior: once RecoveryRequired, do NOT keep trying
+    automated login (Milestone 2 §7's ToS/hammering caution) — use the
+    manually-supplied token instead."""
+    fake = FakePelotonSession()
+    connector = PelotonConnector(credential_store, session=fake)
+    connector.transition_state(ConnectorState.WARNING)
+    connector.transition_state(ConnectorState.DEGRADED)
+    connector.transition_state(ConnectorState.RECOVERY_REQUIRED)
+    connector.submit_manual_recovery("manually-extracted-bearer-token")
+
+    assert connector.authenticate() is True
+    assert fake.post_calls == []  # automated login must NOT have been attempted
+
+
+def test_authenticate_in_recovery_required_with_no_token_yet_returns_false(credential_store):
+    fake = FakePelotonSession()
+    connector = PelotonConnector(credential_store, session=fake)
+    connector.transition_state(ConnectorState.WARNING)
+    connector.transition_state(ConnectorState.DEGRADED)
+    connector.transition_state(ConnectorState.RECOVERY_REQUIRED)
+
+    assert connector.authenticate() is False
+    assert fake.post_calls == []
+
+
+def test_manual_token_is_used_as_bearer_auth_header(credential_store):
+    fake = FakePelotonSession()
+    fake.script_get_response(FakeResponse(200, {"id": "u1"}))
+    fake.script_get_response(FakeResponse(200, {"data": [], "show_next": False}))
+    connector = PelotonConnector(credential_store, session=fake)
+    connector.transition_state(ConnectorState.WARNING)
+    connector.transition_state(ConnectorState.DEGRADED)
+    connector.transition_state(ConnectorState.RECOVERY_REQUIRED)
+    connector.submit_manual_recovery("recovery-token-123")
+    connector.authenticate()
+
+    connector.download()
+
+    assert fake.get_calls[0]["headers"]["Authorization"] == "Bearer recovery-token-123"
+
+
+# --- Feature 3.5: OAuth+PKCE auth path (issue #7) ---------------------------
+
+def _oauth_token_response(access_token="access-1", refresh_token="refresh-1", expires_in=172800, status=200):
+    return FakeResponse(status, {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "expires_in": expires_in,
+    })
+
+
+def test_generate_pkce_pair_challenge_matches_s256_of_verifier():
+    verifier, challenge = generate_pkce_pair()
+
+    expected_digest = hashlib.sha256(verifier.encode("ascii")).digest()
+    expected_challenge = base64.urlsafe_b64encode(expected_digest).rstrip(b"=").decode("ascii")
+
+    assert challenge == expected_challenge
+    assert 43 <= len(verifier) <= 128
+
+
+def test_generate_pkce_pair_is_random_per_call():
+    verifier1, challenge1 = generate_pkce_pair()
+    verifier2, challenge2 = generate_pkce_pair()
+
+    assert verifier1 != verifier2
+    assert challenge1 != challenge2
+
+
+def test_oauth_cached_unexpired_access_token_needs_no_network_call(credential_store):
+    future_expiry = int((datetime.now(timezone.utc) + timedelta(hours=40)).timestamp())
+    credential_store.set(PROVIDER, CRED_OAUTH_ACCESS_TOKEN, "cached-access-token")
+    credential_store.set(PROVIDER, CRED_OAUTH_EXPIRES_AT, str(future_expiry))
+    credential_store.set(PROVIDER, CRED_OAUTH_REFRESH_TOKEN, "cached-refresh-token")
+    fake = FakePelotonSession()
+    connector = PelotonConnector(credential_store, session=fake)
+
+    assert connector.authenticate() is True
+    assert fake.post_calls == []
+    assert connector._active_auth_header == {"Authorization": "Bearer cached-access-token"}
+
+
+def test_oauth_expired_access_token_refreshes_and_persists_both_tokens(credential_store):
+    past_expiry = int((datetime.now(timezone.utc) - timedelta(hours=1)).timestamp())
+    credential_store.set(PROVIDER, CRED_OAUTH_ACCESS_TOKEN, "stale-access-token")
+    credential_store.set(PROVIDER, CRED_OAUTH_EXPIRES_AT, str(past_expiry))
+    credential_store.set(PROVIDER, CRED_OAUTH_REFRESH_TOKEN, "stored-refresh-token")
+    fake = FakePelotonSession()
+    fake.script_post_response(_oauth_token_response(access_token="new-access", refresh_token="new-refresh"))
+    connector = PelotonConnector(credential_store, session=fake)
+
+    assert connector.authenticate() is True
+    assert fake.post_calls[0]["url"] == OAUTH_TOKEN_URL
+    assert fake.post_calls[0]["json"]["grant_type"] == "refresh_token"
+    assert fake.post_calls[0]["json"]["refresh_token"] == "stored-refresh-token"
+    assert credential_store.get(PROVIDER, CRED_OAUTH_ACCESS_TOKEN) == "new-access"
+    assert credential_store.get(PROVIDER, CRED_OAUTH_REFRESH_TOKEN) == "new-refresh"
+    assert connector._active_auth_header == {"Authorization": "Bearer new-access"}
+
+
+def test_oauth_refresh_rotation_second_refresh_uses_rotated_token_not_original(credential_store):
+    """The specific regression this issue calls out: Peloton invalidates a
+    refresh token on use, so the second refresh must send the token
+    returned by the first response, never the original stored one."""
+    credential_store.set(PROVIDER, CRED_OAUTH_REFRESH_TOKEN, "original-refresh-token")
+    fake = FakePelotonSession()
+    connector = PelotonConnector(credential_store, session=fake)
+
+    fake.script_post_response(_oauth_token_response(access_token="access-1", refresh_token="rotated-refresh-1"))
+    assert connector._refresh_oauth_token("original-refresh-token") is True
+    assert credential_store.get(PROVIDER, CRED_OAUTH_REFRESH_TOKEN) == "rotated-refresh-1"
+
+    fake.script_post_response(_oauth_token_response(access_token="access-2", refresh_token="rotated-refresh-2"))
+    assert connector._refresh_oauth_token("rotated-refresh-1") is True
+
+    assert fake.post_calls[0]["json"]["refresh_token"] == "original-refresh-token"
+    assert fake.post_calls[1]["json"]["refresh_token"] == "rotated-refresh-1"
+    assert credential_store.get(PROVIDER, CRED_OAUTH_REFRESH_TOKEN) == "rotated-refresh-2"
+
+
+def test_oauth_refresh_failure_falls_back_to_manual_recovery_in_same_call(credential_store):
+    credential_store.set(PROVIDER, CRED_OAUTH_REFRESH_TOKEN, "revoked-refresh-token")
+    credential_store.set(PROVIDER, CRED_MANUAL_BEARER_TOKEN, "manual-fallback-token")
+    fake = FakePelotonSession()
+    fake.script_post_response(FakeResponse(400, {"error": "invalid_grant"}))
+    connector = PelotonConnector(credential_store, session=fake)
+
+    assert connector.authenticate() is True
+    assert connector._active_auth_header == {"Authorization": "Bearer manual-fallback-token"}
+
+
+def test_oauth_refresh_failure_with_no_manual_token_returns_false(credential_store):
+    credential_store.set(PROVIDER, CRED_OAUTH_REFRESH_TOKEN, "revoked-refresh-token")
+    fake = FakePelotonSession()
+    fake.script_post_response(FakeResponse(401, {"error": "invalid_grant"}))
+    connector = PelotonConnector(credential_store, session=fake)
+
+    assert connector.authenticate() is False
+
+
+def test_oauth_refresh_rate_limited_raises_transient_error(credential_store):
+    credential_store.set(PROVIDER, CRED_OAUTH_REFRESH_TOKEN, "some-refresh-token")
+    fake = FakePelotonSession()
+    fake.script_post_response(FakeResponse(429, {}, headers={"Retry-After": "120"}))
+    connector = PelotonConnector(credential_store, session=fake)
+
+    with pytest.raises(TransientError) as excinfo:
+        connector.authenticate()
+    assert excinfo.value.retry_after_s == 120.0
+
+
+def test_oauth_takes_priority_over_recovery_required_state(credential_store):
+    """Self-healing: an account already in RecoveryRequired with a stored
+    OAuth refresh token heals via OAuth rather than needing the manual
+    path — proving OAuth is checked before ConnectorState, not gated
+    behind it (see architecture doc's 'Why not gate OAuth on
+    ConnectorState too?')."""
+    credential_store.set(PROVIDER, CRED_OAUTH_REFRESH_TOKEN, "healthy-refresh-token")
+    fake = FakePelotonSession()
+    fake.script_post_response(_oauth_token_response(access_token="healed-access", refresh_token="healed-refresh"))
+    connector = PelotonConnector(credential_store, session=fake)
+    connector.transition_state(ConnectorState.WARNING)
+    connector.transition_state(ConnectorState.DEGRADED)
+    connector.transition_state(ConnectorState.RECOVERY_REQUIRED)
+
+    assert connector.authenticate() is True
+    assert connector._active_auth_header == {"Authorization": "Bearer healed-access"}
+
+
+def test_complete_oauth_setup_success_persists_all_three_and_not_others(credential_store):
+    fake = FakePelotonSession()
+    fake.script_post_response(_oauth_token_response(access_token="first-access", refresh_token="first-refresh"))
+    connector = PelotonConnector(credential_store, session=fake)
+
+    connector.complete_oauth_setup("auth-code-123", "verifier-abc")
+
+    assert fake.post_calls[0]["json"]["grant_type"] == "authorization_code"
+    assert fake.post_calls[0]["json"]["code"] == "auth-code-123"
+    assert fake.post_calls[0]["json"]["code_verifier"] == "verifier-abc"
+    assert credential_store.get(PROVIDER, CRED_OAUTH_ACCESS_TOKEN) == "first-access"
+    assert credential_store.get(PROVIDER, CRED_OAUTH_REFRESH_TOKEN) == "first-refresh"
+    assert credential_store.get(PROVIDER, CRED_OAUTH_EXPIRES_AT) is not None
+    # AC4: never conflated with the other paths' credential types.
+    assert credential_store.get(PROVIDER, CRED_EMAIL) is None
+    assert credential_store.get(PROVIDER, CRED_PASSWORD) is None
+    assert credential_store.get(PROVIDER, CRED_MANUAL_BEARER_TOKEN) is None
+
+
+def test_complete_oauth_setup_rejected_code_raises_and_persists_nothing(credential_store):
+    fake = FakePelotonSession()
+    fake.script_post_response(FakeResponse(400, {"error": "invalid_grant"}))
+    connector = PelotonConnector(credential_store, session=fake)
+
+    with pytest.raises(PelotonOAuthRejected):
+        connector.complete_oauth_setup("bad-code", "verifier-abc")
+
+    assert credential_store.get(PROVIDER, CRED_OAUTH_ACCESS_TOKEN) is None
+    assert credential_store.get(PROVIDER, CRED_OAUTH_REFRESH_TOKEN) is None
+
+
+# --- Feature 3.3: Sync (REST only) -----------------------------------------
+
+def test_download_before_authenticate_raises_authentication_error(credential_store):
+    fake = FakePelotonSession()
+    connector = PelotonConnector(credential_store, session=fake)
+    with pytest.raises(AuthenticationError):
+        connector.download()
+
+
+def test_download_does_not_forward_since_as_a_query_param(credential_store):
+    """Issue #5: the live-verified endpoint's request-side filtering was
+    never confirmed to exist — `since` stays in the signature (required by
+    the Connector interface) but must not be sent as an unverified param."""
+    credential_store.set(PROVIDER, CRED_EMAIL, "a@b.com")
+    credential_store.set(PROVIDER, CRED_PASSWORD, "pw")
+    fake = FakePelotonSession()
+    fake.script_post_response(_login_success_response())
+    fake.script_get_response(FakeResponse(200, {"id": "u1"}))
+    fake.script_get_response(FakeResponse(200, {"data": [], "show_next": False}))
+    connector = PelotonConnector(credential_store, session=fake)
+    connector.authenticate()
+
+    connector.download(since="2026-01-01T00:00:00+00:00")
+
+    assert "after" not in fake.get_calls[1]["params"]
+    assert "since" not in fake.get_calls[1]["params"]
+
+
+def test_download_fetches_user_id_then_paginated_workouts(credential_store):
+    credential_store.set(PROVIDER, CRED_EMAIL, "a@b.com")
+    credential_store.set(PROVIDER, CRED_PASSWORD, "pw")
+    fake = FakePelotonSession()
+    fake.script_post_response(_login_success_response())
+    fake.script_get_response(FakeResponse(200, {"id": "u1"}))
+    fake.script_get_response(FakeResponse(200, {"data": [{"id": "w1"}], "show_next": False}))
+    connector = PelotonConnector(credential_store, session=fake)
+    connector.authenticate()
+
+    workouts = connector.download()
+
+    assert workouts == [{"id": "w1"}]
+    assert fake.get_calls[0]["url"] == "https://api.onepeloton.com/api/me"
+    assert fake.get_calls[1]["url"] == "https://api.onepeloton.com/api/user/u1/workouts"
+    assert fake.get_calls[1]["params"] == {"page": 0}
+
+
+def test_download_walks_all_pages_until_show_next_is_falsy(credential_store):
+    credential_store.set(PROVIDER, CRED_EMAIL, "a@b.com")
+    credential_store.set(PROVIDER, CRED_PASSWORD, "pw")
+    fake = FakePelotonSession()
+    fake.script_post_response(_login_success_response())
+    fake.script_get_response(FakeResponse(200, {"id": "u1"}))
+    fake.script_get_response(FakeResponse(200, {"data": [{"id": "w1"}], "show_next": True}))
+    fake.script_get_response(FakeResponse(200, {"data": [{"id": "w2"}], "show_next": False}))
+    connector = PelotonConnector(credential_store, session=fake)
+    connector.authenticate()
+
+    workouts = connector.download()
+
+    assert workouts == [{"id": "w1"}, {"id": "w2"}]
+    assert fake.get_calls[1]["params"] == {"page": 0}
+    assert fake.get_calls[2]["params"] == {"page": 1}
+
+
+def test_download_walks_three_pages_not_just_a_hardcoded_two(credential_store):
+    """QA (issue #5 AC2): the 2-page test above could pass even if paging
+    were hardcoded to stop after exactly one extra page. This rules that
+    out with a 3-page sequence, confirming the loop genuinely continues
+    while show_next is truthy rather than stopping after a fixed count."""
+    credential_store.set(PROVIDER, CRED_EMAIL, "a@b.com")
+    credential_store.set(PROVIDER, CRED_PASSWORD, "pw")
+    fake = FakePelotonSession()
+    fake.script_post_response(_login_success_response())
+    fake.script_get_response(FakeResponse(200, {"id": "u1"}))
+    fake.script_get_response(FakeResponse(200, {"data": [{"id": "w1"}], "show_next": True}))
+    fake.script_get_response(FakeResponse(200, {"data": [{"id": "w2"}], "show_next": True}))
+    fake.script_get_response(FakeResponse(200, {"data": [{"id": "w3"}], "show_next": False}))
+    connector = PelotonConnector(credential_store, session=fake)
+    connector.authenticate()
+
+    workouts = connector.download()
+
+    assert workouts == [{"id": "w1"}, {"id": "w2"}, {"id": "w3"}]
+    assert fake.get_calls[1]["params"] == {"page": 0}
+    assert fake.get_calls[2]["params"] == {"page": 1}
+    assert fake.get_calls[3]["params"] == {"page": 2}
+
+
+def test_download_rate_limited_honors_retry_after(credential_store):
+    credential_store.set(PROVIDER, CRED_EMAIL, "a@b.com")
+    credential_store.set(PROVIDER, CRED_PASSWORD, "pw")
+    fake = FakePelotonSession()
+    fake.script_post_response(_login_success_response())
+    fake.script_get_response(FakeResponse(429, {}, headers={"Retry-After": "60"}))
+    connector = PelotonConnector(credential_store, session=fake)
+    connector.authenticate()
+
+    with pytest.raises(TransientError) as excinfo:
+        connector.download()
+    assert excinfo.value.retry_after_s == 60.0
+
+
+def test_download_session_rejected_raises_authentication_error(credential_store):
+    credential_store.set(PROVIDER, CRED_EMAIL, "a@b.com")
+    credential_store.set(PROVIDER, CRED_PASSWORD, "pw")
+    fake = FakePelotonSession()
+    fake.script_post_response(_login_success_response())
+    fake.script_get_response(FakeResponse(401, {}))
+    connector = PelotonConnector(credential_store, session=fake)
+    connector.authenticate()
+
+    with pytest.raises(AuthenticationError):
+        connector.download()
+
+
+# --- Feature 3.4 (extraction-only): normalize() -----------------------------
+
+# Issue #5's exact live-captured records (docs/verification/peloton-2026-09-28.md).
+_REAL_RECORD_NO_EFFORT_ZONES = {
+    "id": "78f58afc127241efaaecb69860befa77",
+    "start_time": 1790014244,
+    "end_time": 1790014543,
+    "fitness_discipline": "cycling",
+    "total_work": 23646.98,
+    "distance": 1.2163,
+    "calories": 30.64,
+    "effort_zones": None,
+}
+
+_REAL_RECORD_WITH_EFFORT_ZONES = {
+    **_REAL_RECORD_NO_EFFORT_ZONES,
+    "id": "another-real-id",
+    "effort_zones": {
+        "total_effort_points": 39.9,
+        "heart_rate_zone_durations": {
+            "heart_rate_z1_duration": 0,
+            "heart_rate_z2_duration": 119,
+            "heart_rate_z3_duration": 220,
+            "heart_rate_z4_duration": 858,
+            "heart_rate_z5_duration": 0,
+        },
+    },
+}
+
+
+def test_normalize_maps_cycling_class_with_power(credential_store):
+    fake = FakePelotonSession()
+    connector = PelotonConnector(credential_store, session=fake)
+
+    result = connector.normalize(_REAL_RECORD_NO_EFFORT_ZONES)
+
+    assert result["discipline_raw"] == "cycling"
+    assert result["duration_s"] == 299
+    # QA (issue #5 AC8): id/start_time/calories are supposed to be
+    # unchanged pass-throughs, but no existing test actually asserted
+    # them against the real captured record — only distance_m was.
+    assert result["external_id"] == "78f58afc127241efaaecb69860befa77"
+    assert result["start_time"] == 1790014244
+    assert result["calories"] == 30.64
+    assert result["avg_power"] == pytest.approx(23646.98 / 299)
+    assert result["distance_m"] == pytest.approx(1216.3)
+
+
+def test_normalize_effort_zones_null_is_handled_as_absent_not_an_error(credential_store):
+    """Issue #5 AC5: effort_zones being null must not raise, and must have
+    no bearing on the avg_power derivation (which never reads it)."""
+    fake = FakePelotonSession()
+    connector = PelotonConnector(credential_store, session=fake)
+
+    result = connector.normalize(_REAL_RECORD_NO_EFFORT_ZONES)
+
+    assert result["avg_hr"] is None
+    assert result["max_hr"] is None
+    assert result["max_power"] is None
+    assert result["avg_power"] == pytest.approx(23646.98 / 299)
+
+
+def test_normalize_effort_zones_populated_still_never_fabricates_hr_or_max_power(credential_store):
+    """Issue #5 AC6/AC7: avg_hr/max_hr/max_power are always None, even when
+    effort_zones carries real per-zone HR duration data — that data is not
+    a plain avg/max bpm and must not be mapped in, per the never-fabricate
+    standard (this issue's scope excludes surfacing it under new fields)."""
+    fake = FakePelotonSession()
+    connector = PelotonConnector(credential_store, session=fake)
+
+    result = connector.normalize(_REAL_RECORD_WITH_EFFORT_ZONES)
+
+    assert result["avg_hr"] is None
+    assert result["max_hr"] is None
+    assert result["max_power"] is None
+
+
+def test_normalize_missing_end_time_yields_none_duration_no_exception(credential_store):
+    fake = FakePelotonSession()
+    connector = PelotonConnector(credential_store, session=fake)
+    raw = {**_REAL_RECORD_NO_EFFORT_ZONES, "end_time": None}
+
+    result = connector.normalize(raw)
+
+    assert result["duration_s"] is None
+
+
+def test_normalize_missing_total_work_with_no_duration_yields_none_avg_power(credential_store):
+    """Guards both a missing total_work and a division by zero/None
+    duration_s — never a ZeroDivisionError or TypeError."""
+    fake = FakePelotonSession()
+    connector = PelotonConnector(credential_store, session=fake)
+    raw = {**_REAL_RECORD_NO_EFFORT_ZONES, "end_time": None}
+
+    result = connector.normalize(raw)
+
+    assert result["avg_power"] is None
+
+
+def test_normalize_strength_class_has_no_power_never_fabricated(credential_store):
+    """R-PELOTON-06: strength classes never report power. Milestone 2's
+    named scenario, must never become a fabricated 0."""
+    fake = FakePelotonSession()
+    connector = PelotonConnector(credential_store, session=fake)
+    raw = {
+        "id": 2, "start_time": 1790014244, "end_time": 1790014244,
+        "fitness_discipline": "strength", "total_work": None, "effort_zones": None,
+    }
+
+    result = connector.normalize(raw)
+
+    assert result["discipline_raw"] == "strength"
+    assert result["avg_power"] is None
+
+
+def test_normalize_logs_unrecognized_discipline_without_dropping_the_record(credential_store, caplog):
+    """R-PELOTON-07 (semantic drift): an unrecognized fitness_discipline
+    value must be logged, never silently dropped or guessed."""
+    fake = FakePelotonSession()
+    connector = PelotonConnector(credential_store, session=fake)
+    raw = {"id": 3, "start_time": 1790014244, "end_time": 1790015044, "fitness_discipline": "underwater_basket_weaving"}
+
+    result = connector.normalize(raw)
+
+    assert result["discipline_raw"] == "underwater_basket_weaving"  # preserved, not dropped
+    assert result["external_id"] == "3"
+
+
+# --- End-to-end: PelotonConnector through the real Synchronization Engine --
+
+def test_end_to_end_automated_login_sync(db, credential_store):
+    credential_store.set(PROVIDER, CRED_EMAIL, "athlete@example.com")
+    credential_store.set(PROVIDER, CRED_PASSWORD, "pw")
+    fake = FakePelotonSession()
+    fake.script_post_response(_login_success_response())
+    fake.script_get_response(FakeResponse(200, {"id": "u1"}))
+    fake.script_get_response(FakeResponse(200, {"data": [
+        {"id": 1, "start_time": 1790014244, "end_time": 1790016044, "fitness_discipline": "cycling"},
+        {"id": 2, "start_time": 1790100644, "end_time": 1790102444, "fitness_discipline": "strength"},
+    ], "show_next": False}))
+    connector = PelotonConnector(credential_store, session=fake)
+    engine = SynchronizationEngine(db)
+
+    result = engine.run_once([connector])
+
+    assert result.connector_results[0].records_upserted == 2
+    assert result.connector_results[0].state == ConnectorState.HEALTHY
+    checkpoint = engine.get_checkpoint("peloton")
+    assert checkpoint == "1790100644"
+
+    # Epic 6, slice 5: the R-PELOTON-06 concern (strength misnormalized as
+    # a ride) is now verified all the way through to actual persistence,
+    # not just at the connector's raw-extraction layer (Epic 3).
+    canonical_rows = db.execute(
+        "SELECT external_id, discipline FROM normalized_activities "
+        "WHERE provider = 'peloton' ORDER BY external_id"
+    ).fetchall()
+    disciplines = {r["external_id"]: r["discipline"] for r in canonical_rows}
+    assert disciplines["1"] == "cycling"
+    assert disciplines["2"] == "strength"  # never "cycling"/"ride"
+
+
+def test_end_to_end_repeated_auth_failure_transitions_to_degraded(db, credential_store):
+    """Baseline resilience check — the state machine and Sync Engine
+    integration work exactly as they did for Strava/Eufy."""
+    credential_store.set(PROVIDER, CRED_EMAIL, "athlete@example.com")
+    credential_store.set(PROVIDER, CRED_PASSWORD, "wrong-password")
+    fake = FakePelotonSession()
+    fake.script_post_response(FakeResponse(403, {"message": "Access forbidden. Endpoint no longer accepting requests."}))
+    connector = PelotonConnector(credential_store, session=fake)
+    engine = SynchronizationEngine(db)
+
+    result = engine.run_once([connector])
+
+    assert result.connector_results[0].state == ConnectorState.DEGRADED
+
+
+# --- ADR-038 verification: Degraded connectors ARE now periodically re-attempted (resolves BL-007) ---
+
+def test_degraded_connector_is_re_attempted_after_the_backoff_interval_elapses(db, credential_store):
+    """BL-007 resolved: this replaces the earlier test that documented the
+    gap (a connector attempted exactly once, then never again). With
+    ADR-038 wired in, using the Sync Engine's injectable clock to simulate
+    real elapsed days rather than actual wall-clock waiting, a Degraded
+    Peloton connector IS re-attempted once the backoff interval elapses —
+    not on every run (that would be the Milestone 2 §7 hammering risk this
+    ADR was specifically designed to avoid), but on the documented cadence."""
+    credential_store.set(PROVIDER, CRED_EMAIL, "a@b.com")
+    credential_store.set(PROVIDER, CRED_PASSWORD, "wrong-password")
+    fake = FakePelotonSession()
+    fake.script_post_response(FakeResponse(403, {"message": "Access forbidden."}))
+
+    clock = {"now": datetime(2026, 1, 1, tzinfo=timezone.utc)}
+    connector = PelotonConnector(credential_store, session=fake)
+    engine = SynchronizationEngine(db, now_fn=lambda: clock["now"])
+
+    engine.run_once([connector])
+    assert len(fake.post_calls) == 1  # first, entry attempt
+
+    # Same day: still within the 1-day backoff window — no re-attempt yet.
+    clock["now"] += timedelta(hours=6)
+    engine.run_once([connector])
+    assert len(fake.post_calls) == 1
+
+    # One full day later: eligible again per the backoff schedule.
+    clock["now"] += timedelta(days=1)
+    engine.run_once([connector])
+    assert len(fake.post_calls) == 2
+
+
+def test_degraded_connector_escalates_to_recovery_required_after_ten_days(db, credential_store):
+    """Quality Gate 1 (ADR-038 §6): escalates exactly once, at the
+    configured threshold, verified end-to-end through the real
+    PelotonConnector and Sync Engine, not just the pure policy function."""
+    credential_store.set(PROVIDER, CRED_EMAIL, "a@b.com")
+    credential_store.set(PROVIDER, CRED_PASSWORD, "wrong-password")
+    fake = FakePelotonSession()
+    fake.script_post_response(FakeResponse(403, {"message": "Access forbidden."}))
+
+    clock = {"now": datetime(2026, 1, 1, tzinfo=timezone.utc)}
+    connector = PelotonConnector(credential_store, session=fake)
+    engine = SynchronizationEngine(db, now_fn=lambda: clock["now"])
+
+    # Walk the clock forward day by day, well past the 10-day threshold,
+    # only running the engine when the backoff schedule would actually
+    # make a new attempt eligible (1, 3, 7, 14, ... days from entry).
+    for day in (0, 1, 3, 7, 14):
+        clock["now"] = datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(days=day)
+        result = engine.run_once([connector])
+
+    final_state = db.execute(
+        "SELECT state FROM connector_state WHERE provider = 'peloton'"
+    ).fetchone()["state"]
+    assert final_state == "RecoveryRequired"
+    # Real recovery instructions must now be available, matching Feature 3.2.
+    assert "Bearer Token" in connector.request_manual_recovery()

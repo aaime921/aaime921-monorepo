@@ -1,0 +1,211 @@
+"""
+trainiq.storage.schema — Feature 0.3
+
+SQLite schema v1 (Milestone 4 §5) plus a hand-written, numbered migration
+runner (Milestone 4's explicit rejection of Alembic as unnecessary machinery
+for a single-user local file — Decision Matrix 11.1).
+
+Tables, per Milestone 4 §5:
+  raw_activities        — unmodified provider payloads
+  normalized_activities — canonical post-Normalization schema (Milestone A §7)
+  weigh_ins              — Eufy-specific body-composition records
+  dedup_links             — merge/flag decisions with confidence scores
+  sync_checkpoints        — per-provider resume points (ADR-008)
+  connector_state         — Provider State Machine state (ADR-010)
+  credentials_metadata    — NON-secret metadata only; secrets live in Keychain
+  schema_version           — single-row migration tracking
+"""
+
+from __future__ import annotations
+
+import shutil
+import sqlite3
+from datetime import datetime, timezone
+from pathlib import Path
+
+CURRENT_SCHEMA_VERSION = 3
+
+_MIGRATIONS: dict[int, str] = {
+    1: """
+        CREATE TABLE schema_version (
+            version INTEGER NOT NULL
+        );
+        INSERT INTO schema_version (version) VALUES (0);
+
+        CREATE TABLE raw_activities (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            provider TEXT NOT NULL,
+            external_id TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            fetched_at TEXT NOT NULL,
+            UNIQUE(provider, external_id)
+        );
+
+        CREATE TABLE normalized_activities (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            provider TEXT NOT NULL,
+            external_id TEXT NOT NULL,
+            start_time TEXT NOT NULL,
+            duration_s INTEGER NOT NULL,
+            discipline TEXT NOT NULL,
+            distance_m REAL,
+            avg_hr INTEGER,
+            max_hr INTEGER,
+            avg_power INTEGER,
+            max_power INTEGER,
+            calories INTEGER,
+            training_load REAL,
+            training_load_method TEXT,
+            source_confidence REAL NOT NULL,
+            UNIQUE(provider, external_id)
+        );
+        CREATE INDEX idx_normalized_activities_provider_extid
+            ON normalized_activities(provider, external_id);
+        CREATE INDEX idx_normalized_activities_start_time
+            ON normalized_activities(start_time);
+
+        CREATE TABLE weigh_ins (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            provider TEXT NOT NULL,
+            external_id TEXT NOT NULL,
+            timestamp TEXT NOT NULL,
+            weight_kg REAL,
+            body_fat_pct REAL,
+            muscle_mass_pct REAL,
+            UNIQUE(provider, external_id)
+        );
+
+        CREATE TABLE dedup_links (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            activity_id_a INTEGER NOT NULL REFERENCES normalized_activities(id),
+            activity_id_b INTEGER NOT NULL REFERENCES normalized_activities(id),
+            confidence_score REAL NOT NULL,
+            resolution TEXT NOT NULL
+        );
+
+        CREATE TABLE sync_checkpoints (
+            provider TEXT NOT NULL,
+            strategy TEXT NOT NULL DEFAULT 'default',
+            last_success_at TEXT,
+            last_cursor TEXT,
+            PRIMARY KEY (provider, strategy)
+        );
+
+        CREATE TABLE connector_state (
+            provider TEXT PRIMARY KEY,
+            state TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            detail TEXT
+        );
+
+        CREATE TABLE credentials_metadata (
+            provider TEXT PRIMARY KEY,
+            connected INTEGER NOT NULL DEFAULT 0,
+            last_refreshed_at TEXT
+        );
+    """,
+    # ADR-038: Connector Lifecycle Policy. Four new columns on
+    # connector_state, exactly as specified in the ADR §3 — this is the
+    # first real (non-synthetic) schema migration this project has run.
+    2: """
+        ALTER TABLE connector_state ADD COLUMN state_entered_at TEXT;
+        ALTER TABLE connector_state ADD COLUMN last_attempt_at TEXT;
+        ALTER TABLE connector_state ADD COLUMN attempt_count_in_state INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE connector_state ADD COLUMN next_eligible_retry_at TEXT;
+    """,
+    # Epic 7, slice 1: Athlete Knowledge Model persistence. Per Milestone B
+    # §2/ADR-020: persist only irreducible facts, never anything derivable.
+    # Every field is nullable — Milestone B's "missing values reduce
+    # confidence, never block functionality" applies here directly.
+    #
+    # Singleton pattern (id INTEGER PRIMARY KEY CHECK (id = 1)): TrainIQ is
+    # single-user throughout this project's design, so "exactly one
+    # athlete profile, ever" is enforced by the database itself rather
+    # than left as an application-level convention someone could
+    # accidentally violate later. Unlike credentials_metadata (correctly
+    # keyed per-provider, since multiple providers exist), there is no
+    # natural key here — the CHECK constraint is the key.
+    #
+    # date_of_birth is persisted but deliberately NOT consumed by the
+    # training-load engine in this epic (Chief Architect decision,
+    # Question A of the Epic 7 Discovery Report) — age-based max_hr
+    # estimation is an explicitly separate, un-scoped future capability,
+    # not part of Epic 7's persistence-and-wiring responsibility.
+    3: """
+        CREATE TABLE athlete_profile (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            sex TEXT,
+            date_of_birth TEXT,
+            resting_hr INTEGER,
+            max_hr INTEGER,
+            ftp_watts INTEGER
+        );
+    """,
+}
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def backup_database(db_path: Path) -> Path | None:
+    """Timestamped snapshot before any migration (Milestone 4 §5). Returns
+    None if there's nothing to back up yet (fresh install)."""
+    if not db_path.exists():
+        return None
+    backup_dir = db_path.parent / "backups"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    backup_path = backup_dir / f"{db_path.stem}.{stamp}.bak"
+    shutil.copy2(db_path, backup_path)
+    _prune_backups(backup_dir, db_path.stem, keep=5)
+    return backup_path
+
+
+def _prune_backups(backup_dir: Path, stem: str, keep: int) -> None:
+    backups = sorted(backup_dir.glob(f"{stem}.*.bak"))
+    if len(backups) > keep:
+        for old in backups[:-keep]:
+            old.unlink(missing_ok=True)
+
+
+def get_schema_version(conn: sqlite3.Connection) -> int:
+    cur = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='schema_version'"
+    )
+    if cur.fetchone() is None:
+        return 0
+    row = conn.execute("SELECT version FROM schema_version").fetchone()
+    return row[0] if row else 0
+
+
+def migrate(db_path: Path) -> int:
+    """Runs any pending migrations in order, backing up first. Returns the
+    resulting schema version."""
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    if db_path.exists():
+        backup_database(db_path)
+
+    conn = sqlite3.connect(db_path)
+    try:
+        current = get_schema_version(conn)
+        target = CURRENT_SCHEMA_VERSION
+        for version in range(current + 1, target + 1):
+            script = _MIGRATIONS.get(version)
+            if script is None:
+                raise RuntimeError(f"No migration defined for version {version}")
+            conn.executescript(script)
+            conn.execute("UPDATE schema_version SET version = ?", (version,))
+            conn.commit()
+        return get_schema_version(conn)
+    finally:
+        conn.close()
+
+
+def open_db(db_path: Path) -> sqlite3.Connection:
+    """Ensures the schema is current, then returns a connection."""
+    migrate(db_path)
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    return conn
