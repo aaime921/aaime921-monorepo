@@ -33,6 +33,9 @@ Prints `Hello, <NAME>!`, or `Hello, world!` if no name is given.
 Pass `--shout` to print the greeting in all caps, e.g.
 `python3 src/hello.py --shout Alice` prints `HELLO, ALICE!`.
 
+Pass `--version` to print the CLI's version and exit, e.g.
+`python3 src/hello.py --version` prints `1.0.0`.
+
 Test:
 
 ```sh

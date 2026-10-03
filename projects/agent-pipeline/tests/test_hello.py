@@ -61,6 +61,33 @@ class TestCli(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertEqual(result.stdout, "HELLO, WORLD!\n")
 
+    def test_cli_version(self):
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), "--version"],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "1.0.0\n")
+
+    def test_cli_version_takes_precedence_over_name(self):
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), "--version", "Alice"],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "1.0.0\n")
+
+    def test_cli_help_documents_version(self):
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), "--help"],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("--version", result.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

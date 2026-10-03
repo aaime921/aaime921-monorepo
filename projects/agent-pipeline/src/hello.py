@@ -1,6 +1,8 @@
 import argparse
 import sys
 
+VERSION = "1.0.0"
+
 
 def greet(name: str | None, shout: bool = False) -> str:
     """Return the greeting string for `name` (or the "world" default).
@@ -19,6 +21,12 @@ def main(argv: list[str] | None = None) -> int:
         "--shout",
         action="store_true",
         help="Print the greeting in all caps",
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=VERSION,
+        help="Print the version number and exit",
     )
     args = parser.parse_args(argv)
     print(greet(args.name, shout=args.shout))
