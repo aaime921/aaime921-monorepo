@@ -52,6 +52,7 @@ from trainiq.connectors.strava import CRED_EXPIRES_AT as STRAVA_CRED_EXPIRES_AT
 from trainiq.connectors.strava import CRED_REFRESH_TOKEN as STRAVA_CRED_REFRESH_TOKEN
 from trainiq.connectors.strava import PROVIDER as STRAVA_PROVIDER
 from trainiq.connectors.strava import _client_id_and_secret
+from trainiq.connectors.strava_unofficial import StravaUnofficialConnector
 from trainiq.credentials.store import CredentialStore
 
 
@@ -123,6 +124,40 @@ def _setup_strava(credential_store: CredentialStore, stravalib_client: Optional[
     credential_store.set(STRAVA_PROVIDER, STRAVA_CRED_ACCESS_TOKEN, token.access_token)
     credential_store.set(STRAVA_PROVIDER, STRAVA_CRED_EXPIRES_AT, str(token.expires_at))
     print("Strava: connected")
+    return True
+
+
+def _setup_strava_unofficial(credential_store: CredentialStore, connector=None) -> bool:
+    """Returns True if the unofficial (session-cookie) Strava connector
+    ended up connected. Independent of _setup_strava() — this step is
+    offered unconditionally, not gated on the official step's outcome, per
+    #18's 'both connectors can coexist' design and the Architect's
+    resolution of the requirements doc's open question. Unlike Peloton/
+    Eufy, there is no separate 'store then roll back' case: the
+    connector's own submit_manual_recovery() validates via a live request
+    BEFORE persisting anything and is also the only write path — same
+    relationship _setup_strava() already has with exchange_code_for_token().
+    """
+    print("\n--- Strava (unofficial, session cookie) ---")
+    if not _prompt_yes_no("Connect Strava via session cookie now?"):
+        print("Strava (unofficial): skipped")
+        return False
+
+    conn = connector if connector is not None else StravaUnofficialConnector(credential_store)
+    print(conn.request_manual_recovery())
+    cookie_value = _prompt_text("Paste the _strava4_session cookie value here")
+
+    try:
+        ok = conn.submit_manual_recovery(cookie_value)
+    except Exception as exc:  # noqa: BLE001 — deliberate: roll back on ANYTHING unexpected, matching Peloton/Eufy's rule
+        print(f"Strava (unofficial): connection failed unexpectedly ({type(exc).__name__}) — nothing saved")
+        return False
+
+    if not ok:
+        print("Strava (unofficial): cookie rejected. Nothing saved.")
+        return False
+
+    print("Strava (unofficial): connected")
     return True
 
 
@@ -252,6 +287,7 @@ def run_first_time_setup(credential_store: CredentialStore, config_path: Path) -
     print("No providers are configured yet. Let's connect at least one.\n")
     try:
         _setup_strava(credential_store)
+        _setup_strava_unofficial(credential_store)
         _setup_peloton(credential_store)
         _setup_eufy(credential_store, config_path)
     except SetupCancelled:
