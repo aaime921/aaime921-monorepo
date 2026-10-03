@@ -1,13 +1,21 @@
 import argparse
 import sys
+from datetime import datetime
 
 
-def greet(name: str | None, shout: bool = False) -> str:
-    """Return the greeting string for `name` (or the "world" default).
+def greet(name: str | None, shout: bool = False, now: datetime | None = None) -> str:
+    """Return the greeting string for `name` (or the "world" default),
+    with the current timestamp appended in brackets.
+
+    `now` defaults to the real current time (`datetime.now()`) when not
+    supplied; pass a fixed `datetime` to get a deterministic, exactly
+    assertable result (used by tests).
 
     If `shout` is True, the returned string is upper-cased.
     """
-    greeting = f"Hello, {name or 'world'}!"
+    moment = now if now is not None else datetime.now()
+    timestamp = moment.strftime("%Y-%m-%d %H:%M:%S")
+    greeting = f"Hello {name or 'world'}! [{timestamp}]"
     return greeting.upper() if shout else greeting
 
 

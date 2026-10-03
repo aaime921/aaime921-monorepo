@@ -28,10 +28,11 @@ Run:
 python3 src/hello.py [NAME]
 ```
 
-Prints `Hello, <NAME>!`, or `Hello, world!` if no name is given.
+Prints `Hello <NAME>! [YYYY-MM-DD HH:MM:SS]`, or `Hello world! [YYYY-MM-DD HH:MM:SS]`
+if no name is given, with the current timestamp at the moment the command ran.
 
 Pass `--shout` to print the greeting in all caps, e.g.
-`python3 src/hello.py --shout Alice` prints `HELLO, ALICE!`.
+`python3 src/hello.py --shout Alice` prints `HELLO ALICE! [YYYY-MM-DD HH:MM:SS]`.
 
 Test:
 
