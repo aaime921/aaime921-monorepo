@@ -61,6 +61,28 @@ class TestCli(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertEqual(result.stdout, "HELLO, WORLD!\n")
 
+    def test_cli_help(self):
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), "--help"],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("--shout", result.stdout)
+        self.assertIn("Alice", result.stdout)
+        self.assertTrue(result.stdout.startswith("usage:"))
+
+    def test_cli_help_short_flag(self):
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), "-h"],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("--shout", result.stdout)
+        self.assertIn("Alice", result.stdout)
+        self.assertTrue(result.stdout.startswith("usage:"))
+
 
 if __name__ == "__main__":
     unittest.main()

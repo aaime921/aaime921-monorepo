@@ -33,6 +33,9 @@ Prints `Hello, <NAME>!`, or `Hello, world!` if no name is given.
 Pass `--shout` to print the greeting in all caps, e.g.
 `python3 src/hello.py --shout Alice` prints `HELLO, ALICE!`.
 
+Pass `--help`/`-h` to print usage, a description of every argument, and
+worked examples instead of a greeting.
+
 Test:
 
 ```sh

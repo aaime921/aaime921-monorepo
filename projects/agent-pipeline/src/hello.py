@@ -13,7 +13,16 @@ def greet(name: str | None, shout: bool = False) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     """Parse argv, print the greeting, return process exit code (0)."""
-    parser = argparse.ArgumentParser(description="Print a greeting.")
+    parser = argparse.ArgumentParser(
+        description="Print a greeting.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "examples:\n"
+            "  python3 hello.py Alice           Hello, Alice!\n"
+            "  python3 hello.py --shout Alice   HELLO, ALICE!\n"
+            "  python3 hello.py                 Hello, world!\n"
+        ),
+    )
     parser.add_argument("name", nargs="?", default=None, help="Name to greet")
     parser.add_argument(
         "--shout",
