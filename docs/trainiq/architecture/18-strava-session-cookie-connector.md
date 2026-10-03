@@ -1,15 +1,23 @@
 # Architecture: Strava session-cookie connector (`StravaUnofficialConnector`)
 
 Issue: #18
-Requirements: [`docs/requirements/20-strava-session-cookie-connector.md`](../requirements/20-strava-session-cookie-connector.md)
-Discovery: [`docs/discovery/20-strava-zero-cost-paths.md`](../discovery/20-strava-zero-cost-paths.md)
+Requirements: [`docs/trainiq/requirements/18-strava-session-cookie-connector.md`](../requirements/18-strava-session-cookie-connector.md)
+Discovery: [`docs/trainiq/discovery/18-strava-zero-cost-paths.md`](../discovery/18-strava-zero-cost-paths.md)
 
-**Note on numbering:** the requirements/discovery docs header themselves
-"Issue: #20," but the GitHub issue this design is filed against is #18.
-There is exactly one requirements doc matching this topic in the repo, so
-this is treated as a stale internal reference from an earlier pass, not an
-ambiguity — flagged here rather than silently ignored, not treated as
-blocking.
+**Re-review note (issue #18, re-triggered on `stage:architect`):** an earlier
+pass of this doc linked to `docs/requirements/20-*` / `docs/discovery/20-*`,
+which at the time were internally headered "Issue: #20" despite matching
+this topic by content only. That was a real numbering mismatch, since
+resolved: `docs/trainiq/requirements/18-strava-session-cookie-connector.md`
+and `docs/trainiq/discovery/18-zero-cost-paths.md` now exist on `main`,
+correctly headered "Issue: #18," independently confirmed against repo
+history (not taken on a comment's claim) before writing this update. The
+`20-*` originals are still present in the repo (unreferenced, apparently
+leftover from the mislabeling) but are out of scope for this doc to clean
+up. Content below is unchanged from the original design — this re-review
+confirmed the requirements doc's substance matches what this design was
+already built against, so only the stale links/citations here were
+corrected.
 
 ## Approach
 
@@ -374,7 +382,7 @@ are local, private copies of the exact shapes already in
 
 1. Create `trainiq/connectors/strava_unofficial.py` with the module
    docstring (state: cookie-based, unofficial, ToS gray area accepted per
-   issue #20's discovery/requirements docs, parallels `strava-offline`;
+   issue #18's discovery/requirements docs, parallels `strava-offline`;
    cite both docs by path).
 2. Add the module-level constants and `StravaUnofficialHTTPError` as
    specified above.
