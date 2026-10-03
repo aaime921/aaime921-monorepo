@@ -20,11 +20,13 @@ from trainiq.connectors.peloton import CRED_PASSWORD as PELOTON_CRED_PASSWORD
 from trainiq.connectors.peloton import PROVIDER as PELOTON_PROVIDER
 from trainiq.connectors.strava import CRED_REFRESH_TOKEN as STRAVA_CRED_REFRESH_TOKEN
 from trainiq.connectors.strava import PROVIDER as STRAVA_PROVIDER
+from trainiq.connectors.strava_unofficial import PROVIDER as STRAVA_UNOFFICIAL_PROVIDER
 from trainiq.credentials.store import CredentialStore
 from trainiq.setup_wizard import (
     _setup_eufy,
     _setup_peloton,
     _setup_strava,
+    _setup_strava_unofficial,
     run_first_time_setup,
 )
 from trainiq.storage.schema import open_db
@@ -143,6 +145,122 @@ def test_strava_rejected_code_stores_nothing(store, monkeypatch):
 
     assert result is False
     assert store.get(STRAVA_PROVIDER, STRAVA_CRED_REFRESH_TOKEN) is None
+
+
+# --- Strava (unofficial, session cookie) ------------------------------------
+
+class _FakeUnofficialConnector:
+    """Minimal fake matching StravaUnofficialConnector's two-method public
+    surface the wizard step actually calls — no need to fake HTTP
+    internals, per the architecture doc's test strategy notes."""
+
+    def __init__(self, submit_result=True, submit_exception=None):
+        self._submit_result = submit_result
+        self._submit_exception = submit_exception
+        self.submitted_with = None
+
+    def request_manual_recovery(self):
+        return "Log into Strava in your browser, open DevTools..."
+
+    def submit_manual_recovery(self, cookie_value):
+        self.submitted_with = cookie_value
+        if self._submit_exception is not None:
+            raise self._submit_exception
+        return self._submit_result
+
+
+def test_strava_unofficial_declined_stores_nothing(store, monkeypatch):
+    monkeypatch.setattr("builtins.input", _scripted_input("n"))
+
+    result = _setup_strava_unofficial(store, connector=_FakeUnofficialConnector())
+
+    assert result is False
+
+
+def test_strava_unofficial_accepted_with_valid_cookie_reports_success(store, monkeypatch):
+    monkeypatch.setattr("builtins.input", _scripted_input("y", "fake-cookie-value"))
+    fake = _FakeUnofficialConnector(submit_result=True)
+
+    result = _setup_strava_unofficial(store, connector=fake)
+
+    assert result is True
+    assert fake.submitted_with == "fake-cookie-value"
+
+
+def test_strava_unofficial_accepted_with_rejected_cookie_reports_nothing_saved(store, monkeypatch, capsys):
+    monkeypatch.setattr("builtins.input", _scripted_input("y", "bad-cookie-value"))
+    fake = _FakeUnofficialConnector(submit_result=False)
+
+    result = _setup_strava_unofficial(store, connector=fake)
+
+    assert result is False
+    captured = capsys.readouterr()
+    assert "Nothing saved" in captured.out
+
+
+def test_strava_unofficial_unexpected_exception_during_validation_reports_failure(store, monkeypatch):
+    """AC9: an exception other than an expected rejection (e.g. a
+    TransientError from a 429/5xx during the live validation call) must
+    still be caught by the wizard step and reported as a failure, not
+    propagate."""
+    monkeypatch.setattr("builtins.input", _scripted_input("y", "some-cookie-value"))
+    fake = _FakeUnofficialConnector(submit_exception=RuntimeError("simulated transient failure"))
+
+    result = _setup_strava_unofficial(store, connector=fake)
+
+    assert result is False
+
+
+def test_strava_unofficial_prompts_the_connectors_own_recovery_instructions(store, monkeypatch, capsys):
+    """The requirements doc is explicit: the wizard must present the
+    connector's own request_manual_recovery() string, not re-authored
+    copy."""
+    monkeypatch.setattr("builtins.input", _scripted_input("y", "fake-cookie-value"))
+    fake = _FakeUnofficialConnector(submit_result=True)
+
+    _setup_strava_unofficial(store, connector=fake)
+
+    captured = capsys.readouterr()
+    assert fake.request_manual_recovery() in captured.out
+
+
+def test_strava_unofficial_offered_after_official_strava_regardless_of_outcome(store, config_path, monkeypatch):
+    """AC5: the unofficial step is offered unconditionally, right after the
+    official Strava step, whether that step was accepted, declined, or
+    failed — this test covers the "declined" case end-to-end via
+    run_first_time_setup()."""
+    call_count = {"n": 0}
+
+    def _sequenced_input(*_args):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return "n"  # decline official Strava
+        if call_count["n"] == 2:
+            return "n"  # decline unofficial Strava
+        raise KeyboardInterrupt()  # stop the rest of the run
+
+    monkeypatch.setattr("builtins.input", _sequenced_input)
+
+    run_first_time_setup(store, config_path)  # must not raise
+
+    assert call_count["n"] >= 2
+
+
+def test_strava_unofficial_cancellation_propagates_and_stores_nothing(store, monkeypatch):
+    """AC10: Ctrl+C/EOF during this step must propagate SetupCancelled
+    (caught by run_first_time_setup, not locally) and must not leave any
+    credentials behind, since nothing was stored before the cancellation."""
+
+    def _raise_interrupt(*_a):
+        raise KeyboardInterrupt()
+
+    monkeypatch.setattr("builtins.input", _raise_interrupt)
+
+    from trainiq.setup_wizard import SetupCancelled
+    with pytest.raises(SetupCancelled):
+        _setup_strava_unofficial(store, connector=_FakeUnofficialConnector())
+
+    assert store.get(STRAVA_UNOFFICIAL_PROVIDER, "session_cookie") is None
 
 
 # --- Peloton (rollback behavior) --------------------------------------------

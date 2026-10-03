@@ -46,6 +46,9 @@ from trainiq.connectors.base import Connector
 from trainiq.connectors.eufy import EufyConnector
 from trainiq.connectors.peloton import PelotonConnector
 from trainiq.connectors.strava import StravaConnector
+from trainiq.connectors.strava_unofficial import CRED_STRAVA_SESSION_COOKIE as STRAVA_UNOFFICIAL_CRED_SESSION_COOKIE
+from trainiq.connectors.strava_unofficial import PROVIDER as STRAVA_UNOFFICIAL_PROVIDER
+from trainiq.connectors.strava_unofficial import StravaUnofficialConnector
 from trainiq.credentials.store import CredentialStore
 from trainiq.logging_setup import configure, diagnostic_logger, summary_logger
 from trainiq.safety import RunningFromTrashError, assert_not_running_from_trash
@@ -78,6 +81,16 @@ def _build_configured_connectors(credential_store: CredentialStore, config_path:
             log.info("Strava: skipped (not connected)")
     except Exception as exc:  # noqa: BLE001 - composition-time isolation is the point
         log.warning(f"Strava: skipped (construction failed: {exc})")
+
+    # --- Strava (unofficial, session-cookie) ---
+    try:
+        if credential_store.get(STRAVA_UNOFFICIAL_PROVIDER, STRAVA_UNOFFICIAL_CRED_SESSION_COOKIE):
+            connectors.append(StravaUnofficialConnector(credential_store))
+            log.info("Strava (unofficial): configured")
+        else:
+            log.info("Strava (unofficial): skipped (not connected)")
+    except Exception as exc:  # noqa: BLE001 - composition-time isolation is the point
+        log.warning(f"Strava (unofficial): skipped (construction failed: {exc})")
 
     # --- Peloton ---
     try:

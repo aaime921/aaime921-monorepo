@@ -18,6 +18,8 @@ from trainiq.config import set_eufy_device_id
 from trainiq.connectors.eufy import PROVIDER as EUFY_PROVIDER
 from trainiq.connectors.peloton import PROVIDER as PELOTON_PROVIDER
 from trainiq.connectors.strava import PROVIDER as STRAVA_PROVIDER
+from trainiq.connectors.strava_unofficial import CRED_STRAVA_SESSION_COOKIE as STRAVA_UNOFFICIAL_CRED_SESSION_COOKIE
+from trainiq.connectors.strava_unofficial import PROVIDER as STRAVA_UNOFFICIAL_PROVIDER
 from trainiq.credentials.store import CredentialStore
 from trainiq.storage.schema import open_db
 
@@ -106,6 +108,54 @@ def test_peloton_configured_when_email_and_password_present(db, config_path):
 
     assert len(connectors) == 1
     assert connectors[0].provider == PELOTON_PROVIDER
+
+
+def test_strava_unofficial_configured_when_session_cookie_present(db, config_path):
+    store = CredentialStore(conn=db)
+    store.set(STRAVA_UNOFFICIAL_PROVIDER, STRAVA_UNOFFICIAL_CRED_SESSION_COOKIE, "some-session-cookie")
+
+    connectors = _build_configured_connectors(store, config_path)
+
+    assert len(connectors) == 1
+    assert connectors[0].provider == STRAVA_UNOFFICIAL_PROVIDER
+
+
+def test_strava_unofficial_skipped_when_no_session_cookie_stored(db, config_path):
+    store = CredentialStore(conn=db)
+
+    connectors = _build_configured_connectors(store, config_path)
+
+    assert connectors == []
+
+
+def test_strava_unofficial_construction_failure_is_caught_and_skipped(db, config_path, monkeypatch):
+    """Graceful Degradation: a construction failure for this connector must
+    not raise and must not prevent other configured connectors from being
+    returned."""
+    import trainiq.app as app_module
+
+    store = CredentialStore(conn=db)
+    store.set(STRAVA_UNOFFICIAL_PROVIDER, STRAVA_UNOFFICIAL_CRED_SESSION_COOKIE, "some-session-cookie")
+    store.set(STRAVA_PROVIDER, "refresh_token", "token")
+
+    def _exploding_constructor(credential_store):
+        raise RuntimeError("simulated construction failure")
+
+    monkeypatch.setattr(app_module, "StravaUnofficialConnector", _exploding_constructor)
+
+    connectors = _build_configured_connectors(store, config_path)
+
+    assert {c.provider for c in connectors} == {STRAVA_PROVIDER}
+
+
+def test_strava_unofficial_coexists_with_official_strava(db, config_path):
+    store = CredentialStore(conn=db)
+    store.set(STRAVA_PROVIDER, "refresh_token", "token")
+    store.set(STRAVA_UNOFFICIAL_PROVIDER, STRAVA_UNOFFICIAL_CRED_SESSION_COOKIE, "some-session-cookie")
+
+    connectors = _build_configured_connectors(store, config_path)
+
+    assert {c.provider for c in connectors} == {STRAVA_PROVIDER, STRAVA_UNOFFICIAL_PROVIDER}
 
 
 def test_eufy_skipped_when_device_id_missing_from_config_even_with_credentials(db, config_path):
