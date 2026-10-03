@@ -25,6 +25,28 @@
   stage:ba                                      ← Workflow entry point
   ```
 
+### Rule 3: EXACTLY ONE `stage:*` LABEL PER ISSUE (CRITICAL)
+- **An issue can have ONLY ONE active `stage:` label at a time**
+- Valid stages: `stage:ba` → `stage:architect` → `stage:dev` → `stage:qa` → `stage:done`
+- If a routine finishes, it MUST remove the current stage before adding the next stage
+- **Why this is critical:**
+  - Multiple stages cause multiple routines to trigger on the same issue
+  - Developers and QA will execute simultaneously, causing merge conflicts and duplicate work
+  - Lead Router cannot route an issue with ambiguous stage state
+  - Pipeline automation depends on stage labels being unambiguous entry points
+- **Enforcement:** All routines validate single-stage constraint before proceeding. If multiple stages detected:
+  1. Add `needs:human` label
+  2. Comment: "Multiple active stages detected. Removing all stages; BO must decide correct stage"
+  3. Remove ALL stage labels and stop processing
+- **Example of correct progression:**
+  ```
+  Issue created: stage:ba
+  BA done: remove stage:ba → add stage:architect
+  Architect done: remove stage:architect → add stage:dev
+  Developer done: remove stage:dev → add stage:qa
+  QA done: remove stage:qa → add stage:done
+  ```
+
 ---
 
 ## Project Identification
