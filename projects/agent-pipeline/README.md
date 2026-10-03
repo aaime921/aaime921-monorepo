@@ -34,6 +34,8 @@ if no name is given, with the current timestamp.
 Pass `--shout` to print the greeting in all caps, e.g.
 `python3 src/hello.py --shout Alice` prints `HELLO ALICE! [YYYY-MM-DD HH:MM:SS]`.
 
+`--help` also notes that timestamps are shown with the greeting.
+
 Test:
 
 ```sh

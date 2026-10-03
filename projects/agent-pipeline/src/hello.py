@@ -21,7 +21,9 @@ def greet(name: str | None, shout: bool = False, now: datetime | None = None) ->
 
 def main(argv: list[str] | None = None) -> int:
     """Parse argv, print the greeting, return process exit code (0)."""
-    parser = argparse.ArgumentParser(description="Print a greeting.")
+    parser = argparse.ArgumentParser(
+        description="Print a greeting. Timestamps are shown with greeting."
+    )
     parser.add_argument("name", nargs="?", default=None, help="Name to greet")
     parser.add_argument(
         "--shout",

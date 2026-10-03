@@ -79,6 +79,16 @@ class TestCli(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertRegex(result.stdout, rf"^HELLO WORLD! \[{TIMESTAMP_RE}\]\n$")
 
+    def test_cli_help_mentions_timestamp(self):
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), "--help"],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("Timestamps are shown with greeting", result.stdout)
+        self.assertIn("--shout", result.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()
