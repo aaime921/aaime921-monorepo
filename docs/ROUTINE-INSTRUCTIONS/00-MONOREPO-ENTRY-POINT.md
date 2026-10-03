@@ -20,6 +20,39 @@ Valid labels: project:agent-pipeline, project:trainiq, project:{name}""")
 project_name = project_labels[0].replace('project:', '')
 ```
 
+## Step 1.5: Validate Single Stage Label (CRITICAL)
+
+Check that exactly ONE `stage:*` label is active:
+
+```python
+stage_labels = [label for label in issue.labels if label.startswith('stage:')]
+
+if len(stage_labels) != 1:
+    # Multiple stages or no stage = ambiguous pipeline state
+    remove_all_labels([l for l in issue.labels if l.startswith('stage:')])
+    add_label('needs:human')
+    comment("""⚠️ Multiple active stages detected. All stages removed.
+
+Pipeline requires exactly ONE active stage label per issue:
+- stage:ba (Business Analyst)
+- stage:architect (Technical Architect)
+- stage:dev (Developer)
+- stage:qa (QA)
+- stage:done (Complete)
+
+This is a critical constraint to prevent:
+1. Multiple routines triggering simultaneously
+2. Merge conflicts and duplicate work
+3. Ambiguous Lead Router routing
+
+BO: Please label with the correct single stage and re-open.""")
+    return  # STOP PROCESSING
+
+current_stage = stage_labels[0]
+```
+
+**Why this matters:** Without this constraint, Developer and QA could run simultaneously on the same issue, causing merge conflicts and broken workflow. See `CLAUDE.md` Rule 3.
+
 ## Step 2: Load Project-Specific Docs
 
 Based on the detected project, load the project-specific documentation:
