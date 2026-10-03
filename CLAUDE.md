@@ -4,6 +4,29 @@
 
 **trainiq-platform** is a consolidated monorepo for multiple projects (agent-pipeline, trainiq, and future projects). This document defines how projects are identified, ringfenced, and routed to the appropriate pipeline routines.
 
+## 🔒 CRITICAL GUARDRAILS
+
+### Rule 1: NO ROUTINE MODIFICATIONS BY AI
+- **The 8 routines are LOCKED**
+- Claude Code must NEVER modify, reconfigure, or adjust routine settings
+- Routine changes require **EXPLICIT USER APPROVAL only**
+- This includes: triggers, filters, labels, connectors, instructions, or any settings
+- If a routine needs fixing, document the issue and request user approval before proceeding
+- See "Routine Configuration Lock" section below for details
+
+### Rule 2: EVERY ISSUE MUST START WITH `stage:ba` LABEL
+- **When creating a new issue, ALWAYS add the `stage:ba` label**
+- This label is the trigger that starts the BA routine
+- Without `stage:ba`, the issue will not enter the pipeline
+- The `stage:ba` label must be added alongside the `project:*` label
+- Required labels for new issues:
+  ```
+  project:agent-pipeline (or project:trainiq)  ← Project identification
+  stage:ba                                      ← Workflow entry point
+  ```
+
+---
+
 ## Project Identification
 
 **Every GitHub issue MUST have exactly one `project:*` label.**
@@ -136,22 +159,38 @@ on:
       - '.github/workflows/build-trainiq.yml'
 ```
 
-## Routine Configuration Lock
+## ⚠️ Routine Configuration LOCK (CRITICAL)
 
-**This routine configuration is LOCKED.** Do not modify without explicit user approval.
+**THE 8 ROUTINES ARE 100% LOCKED. NO MODIFICATIONS WITHOUT EXPLICIT USER APPROVAL.**
 
-Why?
-- The 8-routine design evolved through iterations fixing trigger/filter issues (#8)
-- Routine configuration is error-prone in Claude Code UI
-- Instructions inside each routine contain project-specific logic
-- Trigger/connector setup should remain stable
+### What is locked?
+- Routine triggers (e.g., "Issue: Labeled")
+- Routine filters (e.g., "stage:ba")
+- Routine connectors (e.g., Composio)
+- Routine models (e.g., Sonnet 5, Haiku 4.5)
+- ANY settings or configuration in the Claude Code UI
 
-If you need to modify:
-1. Verify the change is necessary (check routine instructions first)
-2. Get explicit user approval
-3. Document the reason
-4. Test after changes
-5. Update this CLAUDE.md
+### What is NOT locked?
+- Routine instructions (the text/logic Claude Code executes) — these can be updated
+- Project-specific docs in `docs/{project}/` — these are meant to evolve
+- Code in `projects/{project}/` — this is the actual work
+
+### Why this lock exists
+1. **Trigger/filter issues are invisible in git** — they're in Claude Code UI only, can't be reviewed
+2. **Small mistakes break the entire pipeline** — a wrong filter blocks all workflow
+3. **Configuration evolved through 10+ iterations** — fixing issue #8 took multiple refinement cycles
+4. **BA trigger is particularly critical** — it controls entry point to the entire pipeline
+
+### If you need to modify a routine:
+1. **STOP** — do not make changes
+2. **Document** the problem clearly (which routine, what's wrong, why it needs changing)
+3. **Request user approval** — message the BO with the specific change needed
+4. **Wait for approval** — get explicit permission before touching any routine settings
+5. **Execute** — make only the approved change
+6. **Test** — verify the pipeline still works
+7. **Update this CLAUDE.md** — document the change for future reference
+
+**Remember:** The pipeline only works because these settings are stable. Breaking them breaks everything.
 
 ## Shared Code (shared/ folder)
 
