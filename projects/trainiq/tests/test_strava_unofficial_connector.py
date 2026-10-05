@@ -156,6 +156,20 @@ def test_submit_manual_recovery_valid_cookie_persists_all_three_credentials(cred
     assert fake.get_calls[0]["headers"]["Cookie"] == "_strava4_session=new-cookie-value"
 
 
+def test_submit_manual_recovery_validates_against_corrected_base_url(credential_store):
+    """DEFAULT_BASE_URL was `https://api.strava.com` (no DNS record at all,
+    issue #26) and is now `https://www.strava.com` — the one Strava host
+    independently confirmed resolvable. Guards against the host portion of
+    the constant drifting back to the broken value."""
+    fake = FakeStravaUnofficialSession()
+    fake.script_get_response(FakeResponse(200, {"id": 1}))
+    connector = StravaUnofficialConnector(credential_store, session=fake)
+
+    connector.submit_manual_recovery("new-cookie-value")
+
+    assert fake.get_calls[0]["url"] == "https://www.strava.com/api/v3/athlete"
+
+
 def test_submit_manual_recovery_rejected_cookie_returns_false_and_persists_nothing(credential_store):
     fake = FakeStravaUnofficialSession()
     fake.script_get_response(FakeResponse(401, {}))
@@ -266,6 +280,19 @@ def test_download_uses_cookie_header(credential_store):
     connector.download()
 
     assert fake.get_calls[0]["headers"]["Cookie"] == "_strava4_session=my-session-cookie"
+
+
+def test_download_requests_against_corrected_base_url(credential_store):
+    """Same guard as submit_manual_recovery()'s base-URL test, for the
+    other call site (issue #26)."""
+    fake = FakeStravaUnofficialSession()
+    fake.script_get_response(FakeResponse(200, []))
+    connector = StravaUnofficialConnector(credential_store, session=fake)
+    _authenticate_with_cookie(connector, credential_store)
+
+    connector.download()
+
+    assert fake.get_calls[0]["url"] == "https://www.strava.com/api/v3/athlete/activities"
 
 
 # --- Error handling ------------------------------------------------------------

@@ -48,7 +48,7 @@ CRED_STRAVA_SESSION_COOKIE = "session_cookie"
 CRED_STRAVA_SESSION_OBTAINED_AT = "session_obtained_at"
 CRED_STRAVA_SESSION_EXPIRES_AT = "session_expires_at"
 
-DEFAULT_BASE_URL = "https://api.strava.com"  # ADR-007: one named constant, constructor-overridable for tests
+DEFAULT_BASE_URL = "https://www.strava.com"  # ADR-007: one named constant, constructor-overridable for tests
 
 # Conservative, unevidenced estimate (per requirements doc) — same
 # flagged-not-researched category as PelotonConnector's
