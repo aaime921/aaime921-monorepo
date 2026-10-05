@@ -1,1 +1,61 @@
-IyBWZXJpZmljYXRpb246IENvcnJlY3QgQURSLTAwNyBhbmQgQkFDS0xPRy5tZCBCTC0wMDEncyBTdHJhdmEgSG9zdG5hbWUgQ2xhaW0KCioqSXNzdWU6KiogIzI5CioqUFI6KiogIzMyIChgY2xhdWRlL2V4Y2l0aW5nLWtudXRoLWU2cWthM2AgJmFycjsgYG1haW5gKQoqKlJlcXVpcmVtZW50czoqKiBbYGRvY3MvdHJhaW5pcS9yZXF1aXJlbWVudHMvMjktYWRyLTAwNy1jb3JyZWN0LXN0cmF2YS1ob3N0Lm1kYF0oLi4vcmVxdWlyZW1lbnRzLzI5LWFkci0wMDctY29ycmVjdC1zdHJhdmEtaG9zdC5tZCkKKipBcmNoaXRlY3R1cmU6KiogW2Bkb2NzL3RyYWluaXEvYXJjaGl0ZWN0dXJlLzI5LWFkci0wMDctY29ycmVjdC1zdHJhdmEtaG9zdC5tZGBdKC4uL2FyY2hpdGVjdHVyZS8yOS1hZHItMDA3LWNvcnJlY3Qtc3RyYXZhLWhvc3QubWQpCgojIyBNZXRob2QKCkNoZWNrZWQgb3V0IFBSIGJyYW5jaCBgY2xhdWRlL2V4Y2l0aW5nLWtudXRoLWU2cWthM2AgYXQgYGMwNTEyN2VgLiBEaWZmZWQgaXQKYWdhaW5zdCBgb3JpZ2luL21haW5gIChgMGI2NWU1YmApIHRvIGNvbmZpcm0gZXhhY3Qgc2NvcGUsIHJlYWQgYm90aCBjb3JyZWN0ZWQKZmlsZXMgaW4gZnVsbCwgcmUtcmFuIHRoZSB2ZXJpZmljYXRpb24gZ3JlcCwgYW5kIHJhbiB0aGUgZnVsbCBgdHJhaW5pcWAgdGVzdApzdWl0ZSAoZG9jcy1vbmx5IGNoYW5nZSwgc28gdGhpcyBpcyBhIHJlZ3Jlc3Npb24gY2hlY2ssIG5vdCBhbiBBQyBjaGVjaykuCgojIyBTY29wZSBjaGVjawoKYGdpdCBkaWZmIC0tc3RhdCBvcmlnaW4vbWFpbiBvcmlnaW4vY2xhdWRlL2V4Y2l0aW5nLWtudXRoLWU2cWthM2A6CgpgYGAKZG9jcy90cmFpbmlxL2Fkci9BRFItMDA3LW5vLWhhcmRjb2RlZC1lbmRwb2ludHMubWQgfCAgNCArKystCnByb2plY3RzL3RyYWluaXEvQkFDS0xPRy5tZCAgICAgICAgICAgICAgICAgICAgICAgIHwgMTQgKysrKysrKysrKystLS0tLS0KMiBmaWxlcyBjaGFuZ2VkLCAxMSBpbnNlcnRpb25zKCspLCA3IGRlbGV0aW9ucygtKQpgYGAKCkV4YWN0bHkgdGhlIHR3byBmaWxlcyB0aGUgcmVxdWlyZW1lbnRzL2FyY2hpdGVjdHVyZSBkb2NzIHNjb3BlIHRoaXMgaXNzdWUKdG8uIE5vIGNvbm5lY3RvciBjb2RlLCB0ZXN0LCBvciBvdGhlciBkb2MgdG91Y2hlZC4KCiMjIEFjY2VwdGFuY2UgY3JpdGVyaWEKCnwgQUMgfCBSZXN1bHQgfCBFdmlkZW5jZSB8CnwtLS0tfC0tLS0tLS0tfC0tLS0tLS0tLS18CnwgMS4gQURSLTAwNyBubyBsb25nZXIgY2FsbHMgYGFwaS5zdHJhdmEuY29tYCBjdXJyZW50L3ZhbGlkOyBuYW1lcyBgaHR0cHM6Ly93d3cuc3RyYXZhLmNvbS9hcGkvdjNgIGFzIGJhc2UsIGNpdGVzICMyNiB8ICoqUEFTUyoqIHwgYE9yaWdpbmAgbGluZSBhbmQgbmV3IGAjIyBDb250ZXh0YCBwYXJhZ3JhcGggYm90aCBuYW1lIGBodHRwczovL3d3dy5zdHJhdmEuY29tL2FwaS92M2AgYXMgdGhlIHJlYWwsIHJlYWNoYWJsZSBob3N0IGFuZCBleHBsaWNpdGx5IHN0YXRlIGBhcGkuc3RyYXZhLmNvbWAgImhhcyBubyBETlMgcmVjb3JkIGF0IGFsbCBhbmQgaGFzIG5ldmVyIGJlZW4gYSByZWFjaGFibGUgU3RyYXZhIGhvc3QsIiBjaXRpbmcgIzI2J3MgYGRpZ2AvYGdldGVudCBob3N0c2AgZmluZGluZ3MuIHwKfCAyLiBNaWdyYXRpb24gY2xhaW0gZWl0aGVyIHNvdXJjZWQgb3IgcmVtb3ZlZCB8ICoqUEFTUyoqIHwgYE9yaWdpbmAgbGluZSBjaXRlcyAiU3RyYXZhIGRldmVsb3BlciBjaGFuZ2Vsb2cgLyBjb21tdW5pdHktaHViICdBbiB1cGRhdGUgdG8gb3VyIGRldmVsb3BlciBwcm9ncmFtJyIgd2l0aCBkYXRlcyAoMjAyNy0wMS0wNCBhdmFpbGFibGUsIDIwMjctMDYtMDEgZmluYWwgY3V0b3ZlcikuIE5vdCBsZWZ0IHVudmVyaWZpZWQuIChTb3VyY2UgaXMgd2ViLXNlYXJjaC1kZXJpdmVkIHBlciB0aGUgQXJjaGl0ZWN0J3MgZG9jLCBub3QgYSBkaXJlY3QgZmV0Y2g7IGZsYWdnZWQgdGhlcmUgYXMgYSByZXNpZHVhbCBjYXZlYXQgZm9yIHRoZSBCTyB0byBzcG90LWNoZWNrOyB0aGlzIGRvZXNuJ3QgYmxvY2sgQUMyLCB3aGljaCBvbmx5IHJlcXVpcmVzIGEgcmVhbCwgY2hlY2thYmxlIHNvdXJjZSB0byBiZSBjaXRlZC4pIHwKfCAzLiBCQUNLTE9HLm1kIEJMLTAwMSBjb3JyZWN0ZWQgdG8gbWF0Y2ggfCAqKlBBU1MqKiB8IEJMLTAwMSByZXdyaXR0ZW46ICJDb3JyZWN0ZWQgKDIwMjYtMTAsICMyOSkiIG5vdGUgYWRkZWQsIGB3d3cuc3RyYXZhLmNvbS9hcGkvdjNgIG5hbWVkIGFzIHRoZSByZWFsIGN1cnJlbnQgaG9zdCBtaWdyYXRpbmcgdG8gYGFwaS12My5zdHJhdmEuY29tYCBvbiB0aGUgc2FtZSBkYXRlcywgYHN0cmF2YWxpYmAncyBoYXJkY29kZWQgYEFwaVYzLnNlcnZlciA9ICJ3d3cuc3RyYXZhLmNvbSJgIGNpdGVkIHRvIGNvcnJvYm9yYXRlLiBVbmRlcmx5aW5nIGFjdGlvbiBpdGVtICh3YXRjaCBgc3RyYXZhbGliYCBwcmUtbWlncmF0aW9uKSBwcmVzZXJ2ZWQsIG5vdCBkcm9wcGVkLiB8Cnw0LiBObyBjb21tZW50L2RvY3N0cmluZyBpbiBgcHJvamVjdHMvdHJhaW5pcS9gIGFzc2VydHMgYGFwaS5zdHJhdmEuY29tYCBhcyBwcmVzZW50bHkgdmFsaWQgfCAqKlBBU1MqKiB8IGBncmVwIC1ybiAiYXBpLnN0cmF2YS5jb20iIC0taW5jbHVkZT0qLnB5IHByb2plY3RzL3RyYWluaXEvYCBvbiB0aGUgUFIgYnJhbmNoIHJldHVybnMgb25seSB0aGUgZm91ciBwcmUtZXhpc3Rpbmcgc2FuZGJveC1lZ3Jlc3MgY29tbWVudHMgKGBzdHJhdmEucHk6NTFgLCBgc3RyYXZhLnB5OjEwNWAsIGBzdHJhdmFfdW5vZmZpY2lhbC5weToxMjJgLCBgc3RyYXZhX3Vub2ZmaWNpYWwucHk6MzY1YCwgcGx1cyBgdGVzdF9zdHJhdmFfY29ubmVjdG9yLnB5OjVgIHJlZmVyZW5jaW5nIHRoZSBzYW1lIGRvY3N0cmluZykgLSBhbGwgZGVzY3JpYmluZyB0aGlzIHNhbmRib3gncyBvd24gbmV0d29yayByZXN0cmljdGlvbiwgbm90IGEgY2xhaW0gYWJvdXQgU3RyYXZhJ3MgcmVhbCBob3N0LiBJZGVudGljYWwgdG8gdGhlIEFyY2hpdGVjdCdzIHByZWRpY3RlZCByZXN1bHQ7IHplcm8gY29kZSBjaGFuZ2VzIHdlcmUgbmVlZGVkLiB8Cns1LiBEb2NzLW9ubHksIG5vIGNvbm5lY3RvciBjb2RlL3Rlc3QvYmVoYXZpb3IgY2hhbmdlIHwgKipQQVNTKiogfCBDb25maXJtZWQgYnkgdGhlIHNjb3BlLWNoZWNrIGRpZmYgYWJvdmU6IG9ubHkgYEFEUi0wMDctbm8taGFyZGNvZGVkLWVuZHBvaW50cy5tZGAgYW5kIGBCQUNLTE9HLm1kYCBjaGFuZ2VkLiB8Cnw2LiBIaXN0b3JpY2FsIGRlc2lnbiBkb2NzIGxlZnQgdW5jaGFuZ2VkIHwgKipQQVNTKiogfCBTYW1lIHNjb3BlLWNoZWNrIGRpZmYgLSBgZG9jcy90cmFpbmlxL3JlcXVpcmVtZW50cy8xOC0qYCwgYDIwLSpgLCBgMjYtKmAsIGBkb2NzL3RyYWluaXEvZGlzY292ZXJ5LzE4LSpgLCBgMjAtKmAsIGBkb2NzL3RyYWluaXEvYXJjaGl0ZWN0dXJlLzE4LSpgLCBgMjItKmAsIGAyNi0qYCBkbyBub3QgYXBwZWFyIGluIHRoZSBkaWZmIGF0IGFsbC4gfAoKKipBbGwgNiBhY2NlcHRhbmNlIGNyaXRlcmlhIHBhc3MuKioKCiMjIFJlZ3Jlc3Npb24gY2hlY2sgKGZ1bGwgdGVzdCBzdWl0ZSkKCmBgYApjZCBwcm9qZWN0cy90cmFpbmlxICYmIHB5dGVzdCB0ZXN0cy8gLXEKYGBgCgpSZXN1bHQgb24gUFIgYnJhbmNoIChgYzA1MTI3ZWApOiAqKjIgZmFpbGVkLCAzNzEgcGFzc2VkKiouCgpCb3RoIGZhaWx1cmVzIChgdGVzdF9wZWxvdG9uX2Nzdl9pbXBvcnQucHk6OnRlc3RfcmVhbF9jc3ZfaW1wb3J0X2lzX2lkZW1wb3RlbnRgLApgOjp0ZXN0X3JlYWxfY3N2X2Z1bGxfcmVncmVzc2lvbmApIGFyZSBgRmlsZU5vdEZvdW5kRXJyb3JgIG9uCmAvaG9tZS9jbGF1ZGUvcGVsb3Rvbl93b3JrL2FpbWVhNzVfd29ya291dHMuY3N2YCAtIGEgbGl2ZS1hY2NvdW50IENTViBmaXh0dXJlCm5vdCBwcmVzZW50IGluIHRoaXMgc2FuZGJveC4gQ29uZmlybWVkICoqcHJlLWV4aXN0aW5nIGFuZCB1bnJlbGF0ZWQqKjogdGhlCmlkZW50aWNhbCB0d28gZmFpbHVyZXMgb2NjdXIgb24gYG9yaWdpbi9tYWluYCAoYDBiNjVlNWJgKSBiZWZvcmUgdGhpcyBQUidzCmNoYW5nZXMgYXJlIGFwcGxpZWQgKGBweXRlc3QgdGVzdHMvdGVzdF9wZWxvdG9uX2Nzdl9pbXBvcnQucHkgLXFgIC0+IHNhbWUKYDIgZmFpbGVkLCA4IHBhc3NlZGApLiBUaGlzIFBSIHRvdWNoZXMgbm8gY29kZSBvciB0ZXN0cywgY29uc2lzdGVudCB3aXRoCkFDNSwgc28gbm8gbmV3IGZhaWx1cmVzIGFyZSBleHBlY3RlZCBvciBmb3VuZC4KCiMjIFZlcmRpY3QKCuKchSBBbGwgNiBhY2NlcHRhbmNlIGNyaXRlcmlhIHZlcmlmaWVkIHBhc3MuIE5vIHJlZ3Jlc3Npb25zICgocHJlLWV4aXN0aW5nLAp1bnJlbGF0ZWQgdGVzdCBmYWlsdXJlcyBvbmx5KS4gUFIgIzMyIGFwcHJvdmVkLgo=
+# Verification: Correct ADR-007 and BACKLOG.md BL-001's Strava Hostname Claim
+
+**Issue:** #29
+**PR:** #32 (`claude/exciting-knuth-e6qka3` → `main`)
+**Requirements:** [`docs/trainiq/requirements/29-adr-007-correct-strava-host.md`](../requirements/29-adr-007-correct-strava-host.md)
+**Architecture:** [`docs/trainiq/architecture/29-adr-007-correct-strava-host.md`](../architecture/29-adr-007-correct-strava-host.md)
+
+## Method
+
+Checked out PR branch `claude/exciting-knuth-e6qka3` at `c05127e`. Diffed it
+against `origin/main` (`0b65e5b`) to confirm exact scope, read both corrected
+files in full, re-ran the verification grep, and ran the full `trainiq` test
+suite (docs-only change, so this is a regression check, not an AC check).
+
+## Scope check
+
+`git diff --stat origin/main origin/claude/exciting-knuth-e6qka3`:
+
+```
+docs/trainiq/adr/ADR-007-no-hardcoded-endpoints.md |  4 +++-
+projects/trainiq/BACKLOG.md                        | 14 ++++++++------
+2 files changed, 11 insertions(+), 7 deletions(-)
+```
+
+Exactly the two files the requirements/architecture docs scope this issue
+to. No connector code, test, or other doc touched.
+
+## Acceptance criteria
+
+| AC | Result | Evidence |
+|----|--------|----------|
+| 1. ADR-007 no longer calls `api.strava.com` current/valid; names `https://www.strava.com/api/v3` as base, cites #26 | **PASS** | `Origin` line and new `## Context` paragraph both name `https://www.strava.com/api/v3` as the real, reachable host and explicitly state `api.strava.com` "has no DNS record at all and has never been a reachable Strava host," citing #26's `dig`/`getent hosts` findings. |
+| 2. Migration claim either sourced or removed | **PASS** | `Origin` line cites "Strava developer changelog / community-hub 'An update to our developer program'" with dates (2027-01-04 available, 2027-06-01 final cutover). Not left unverified. (Source is web-search-derived per the Architect's doc, not a direct fetch — flagged there as a residual caveat for the BO to spot-check; this doesn't block AC2, which only requires a real, checkable source to be cited.) |
+| 3. BACKLOG.md BL-001 corrected to match | **PASS** | BL-001 rewritten: "Corrected (2026-10, #29)" note added, `www.strava.com/api/v3` named as the real current host migrating to `api-v3.strava.com` on the same dates, `stravalib`'s hardcoded `ApiV3.server = "www.strava.com"` cited to corroborate. Underlying action item (watch `stravalib` pre-migration) preserved, not dropped. |
+| 4. No comment/docstring in `projects/trainiq/` asserts `api.strava.com` as presently valid | **PASS** | `grep -rn "api.strava.com" --include=*.py projects/trainiq/` on the PR branch returns only the four pre-existing sandbox-egress comments (`strava.py:51`, `strava.py:105`, `strava_unofficial.py:122`, `strava_unofficial.py:365`, plus `test_strava_connector.py:5` referencing the same docstring) — all describing this sandbox's own network restriction, not a claim about Strava's real host. Identical to the Architect's predicted result; zero code changes were needed. |
+| 5. Docs-only, no connector code/test/behavior change | **PASS** | Confirmed by the scope-check diff above: only `ADR-007-no-hardcoded-endpoints.md` and `BACKLOG.md` changed. |
+| 6. Historical design docs left unchanged | **PASS** | Same scope-check diff — `docs/trainiq/requirements/18-*`, `20-*`, `26-*`, `docs/trainiq/discovery/18-*`, `20-*`, `docs/trainiq/architecture/18-*`, `22-*`, `26-*` do not appear in the diff at all. |
+
+**All 6 acceptance criteria pass.**
+
+## Regression check (full test suite)
+
+```
+cd projects/trainiq && pytest tests/ -q
+```
+
+Result on PR branch (`c05127e`): **2 failed, 371 passed**.
+
+Both failures (`test_peloton_csv_import.py::test_real_csv_import_is_idempotent`,
+`::test_real_csv_full_regression`) are `FileNotFoundError` on
+`/home/claude/peloton_work/aimea75_workouts.csv` — a live-account CSV fixture
+not present in this sandbox. Confirmed **pre-existing and unrelated**: the
+identical two failures occur on `origin/main` (`0b65e5b`) before this PR's
+changes are applied (`pytest tests/test_peloton_csv_import.py -q` → same
+`2 failed, 8 passed`). This PR touches no code or tests, consistent with
+AC5, so no new failures are expected or found.
+
+## Verdict
+
+✅ All 6 acceptance criteria verified pass. No regressions (pre-existing,
+unrelated test failures only). PR #32 approved.
