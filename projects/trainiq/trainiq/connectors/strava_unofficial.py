@@ -30,6 +30,14 @@ this is the one load-bearing decision in this design — `connector_state`
 is keyed by provider alone, so sharing `"strava"` would conflate the two
 connectors' independent lifecycle tracking), and is not wired into
 `trainiq/app.py` or `trainiq/setup_wizard.py` in this issue's scope.
+
+**Issue #30 update:** `/api/v3/*` was confirmed (BO's live evidence) to
+reject cookie-only auth outright (401) — it requires an OAuth bearer token
+Strava never issues for cookie sessions. Both call sites that used to hit
+`/api/v3/*` (`download()` and `submit_manual_recovery()`'s validation call)
+now use Strava's own web endpoint, `GET /athlete/training_activities`,
+which does accept the cookie. See
+docs/trainiq/architecture/30-strava-unofficial-web-endpoints.md.
 """
 
 from __future__ import annotations
@@ -57,7 +65,40 @@ ASSUMED_SESSION_LIFETIME_S = 7 * 24 * 3600
 SESSION_EXPIRY_SAFETY_MARGIN_S = 1 * 24 * 3600
 
 DEFAULT_RETRY_AFTER_S = 3600  # used when a 429 has no Retry-After header
-PER_PAGE = 200
+
+# --- Issue #30: web endpoint + headers ---------------------------------------
+
+TRAINING_ACTIVITIES_PATH = "/athlete/training_activities"
+
+# Required per the BO's live evidence — without these the endpoint returns
+# an HTML page instead of JSON (requirements doc Scope).
+WEB_ENDPOINT_HEADERS = {
+    "X-Requested-With": "XMLHttpRequest",
+    "Accept": "application/json",
+    # Plain, unremarkable desktop-browser UA string. Not trying to mimic a
+    # *specific* browser/version closely — this just has to not look like
+    # a bare script's default UA (the behavior the BO's evidence is
+    # actually gating on), and a version-pinned string would silently go
+    # stale. No evidence exists that Strava is more specific than that.
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    ),
+}
+
+# Candidate field names for each *_raw value, tried in order, per item.
+# The BO's issue body lists "start_time/date fields" without pinning an
+# exact key — the only name in this connector's new surface the evidence
+# doesn't nail down (every other field — distance_raw, moving_time_raw,
+# elapsed_time_raw, elevation_gain_raw, id, name, display_type,
+# activity_type_display_name, commute, private, has_latlng, description —
+# is given verbatim in the issue body). Per the Evidence-based principle,
+# this is not guessed as a single hardcoded key: the Developer tries these
+# in order and takes the first present, so a wrong guess fails loudly
+# instead of silently mis-normalizing every activity's start_time (which
+# would also corrupt the incremental checkpoint, since
+# extract_resume_cursor() keys off start_time).
+_START_FIELD_CANDIDATES = ("start_date_local_raw", "start_date_raw", "start_date", "start_day")
 
 
 class StravaUnofficialHTTPError(Exception):
@@ -125,15 +166,21 @@ class StravaUnofficialConnector(Connector):
         )
 
     def submit_manual_recovery(self, cookie_value: str) -> bool:
-        """Validates via GET /api/v3/athlete BEFORE persisting anything —
-        per AC2's explicit requirement. Returns False (never raises) on a
-        rejected cookie; lets TransientError propagate unchanged (a 429/5xx
-        during validation isn't evidence the cookie is bad, same
-        distinction every other connector's error handling already makes)."""
+        """Validates via GET /athlete/training_activities?page=1 BEFORE
+        persisting anything (same AC2 requirement as before — only the
+        endpoint changed, since /api/v3/athlete now 401s even for a valid
+        cookie). Returns False (never raises) on a rejected/expired cookie
+        (401/403, 3xx-to-login, or HTML-not-JSON — all three now classified
+        identically, see _authenticated_get); lets TransientError propagate
+        unchanged (a 429/5xx during validation isn't evidence the cookie is
+        bad, same distinction every other connector's error handling
+        already makes)."""
         if not cookie_value:
             raise ValueError("Refusing to store an empty session cookie value")
         try:
-            self._authenticated_get("/api/v3/athlete", cookie_override=cookie_value)
+            self._authenticated_get(
+                TRAINING_ACTIVITIES_PATH, params={"page": 1}, cookie_override=cookie_value
+            )
         except (AuthenticationError, StravaUnofficialHTTPError):
             return False
 
@@ -147,27 +194,35 @@ class StravaUnofficialConnector(Connector):
 
     def _authenticated_get(
         self, path: str, params: dict[str, Any] | None = None, cookie_override: str | None = None
-    ) -> Any:
-        """GET against `path` with the Cookie header, applying one uniform
-        status-code classification (mirrors PelotonConnector's
-        _authenticated_get). Returns the parsed JSON body — a list for
-        /athlete/activities, a dict for /athlete."""
+    ) -> dict[str, Any]:
+        """GET against `path` with the Cookie and web-endpoint headers,
+        applying one uniform response classification (mirrors
+        PelotonConnector's _authenticated_get)."""
         cookie = cookie_override if cookie_override is not None else self._active_cookie
         try:
             response = self._session.get(
                 f"{self._base_url}{path}",
                 params=params or {},
-                headers={"Cookie": f"_strava4_session={cookie}"},
+                headers={"Cookie": f"_strava4_session={cookie}", **WEB_ENDPOINT_HEADERS},
             )
         except _TransientHTTPCondition as exc:
             raise TransientError(
                 f"{PROVIDER}: transient error during request: {exc}", retry_after_s=exc.retry_after_s
             ) from exc
 
+        # A 3xx (redirect to login) is an invalid-session signal, not an
+        # "unexpected status." _RequestsSession does not follow redirects
+        # (allow_redirects=False) for this to be observable at all — the
+        # default, redirect-following behavior would silently resolve this
+        # to a 200 HTML page, losing the signal entirely before it reaches
+        # this method.
+        if 300 <= response.status_code < 400:
+            self._clear_session_credentials()
+            raise AuthenticationError(
+                f"{PROVIDER}: session rejected (redirect to {response.headers.get('Location', '?')}) — cookie cleared"
+            )
         if response.status_code in (401, 403):
-            self._credentials.delete(PROVIDER, CRED_STRAVA_SESSION_COOKIE)
-            self._credentials.delete(PROVIDER, CRED_STRAVA_SESSION_OBTAINED_AT)
-            self._credentials.delete(PROVIDER, CRED_STRAVA_SESSION_EXPIRES_AT)
+            self._clear_session_credentials()
             raise AuthenticationError(
                 f"{PROVIDER}: session rejected (status {response.status_code}) — cookie cleared"
             )
@@ -178,52 +233,114 @@ class StravaUnofficialConnector(Connector):
             raise TransientError(f"{PROVIDER}: transient HTTP status {response.status_code}")
         if response.status_code != 200:
             raise StravaUnofficialHTTPError(f"{PROVIDER}: unexpected status {response.status_code}")
-        return response.json()
+
+        # A 200 with an HTML body (not JSON) is ALSO an invalid-session
+        # signal per AC5 — Strava can serve a login/interstitial page with
+        # a 200 rather than a redirect in some flows. Must be reclassified
+        # here, not left to raise an uncaught JSON-decode error out of this
+        # method.
+        try:
+            return response.json()
+        except ValueError as exc:
+            self._clear_session_credentials()
+            raise AuthenticationError(
+                f"{PROVIDER}: session rejected (non-JSON response body — likely an HTML login page) — cookie cleared"
+            ) from exc
+
+    def _clear_session_credentials(self) -> None:
+        """Extracted from the inline triple-delete — now called from three
+        sites (401/403, 3xx, bad JSON) instead of one, so it's a named
+        helper rather than copy-pasted three times."""
+        self._credentials.delete(PROVIDER, CRED_STRAVA_SESSION_COOKIE)
+        self._credentials.delete(PROVIDER, CRED_STRAVA_SESSION_OBTAINED_AT)
+        self._credentials.delete(PROVIDER, CRED_STRAVA_SESSION_EXPIRES_AT)
 
     def download(self, since: str | None = None) -> list[dict[str, Any]]:
         if self._active_cookie is None:
             raise AuthenticationError(f"{PROVIDER}: download() called before a successful authenticate()")
 
-        # Checkpoint is an ISO 8601 string (base-class convention); the
-        # REST API's `after` param is Unix epoch seconds, same conversion
-        # StravaConnector.download() already does before handing it to
-        # stravalib.
-        after = int(datetime.fromisoformat(since).timestamp()) if since else None
+        since_epoch = int(datetime.fromisoformat(since).timestamp()) if since else None
 
         activities: list[dict[str, Any]] = []
         page = 1
-        while True:
-            params: dict[str, Any] = {"per_page": PER_PAGE, "page": page}
-            if after is not None:
-                params["after"] = after
-            batch = self._authenticated_get("/api/v3/athlete/activities", params=params)
+        fetched_count = 0
+        total: int | None = None
+        while total is None or fetched_count < total:
+            body = self._authenticated_get(TRAINING_ACTIVITIES_PATH, params={"page": page})
+            batch = body.get("models", [])
+            total = body.get("total", 0)
             if not batch:
-                break
-            activities.extend(batch)
+                break  # defensive fallback — total/fetched_count should already have ended the loop
+            fetched_count += len(batch)
+
+            if since_epoch is not None:
+                stopped_early = False
+                for item in batch:
+                    item_epoch = int(
+                        datetime.fromisoformat(_extract_start_time_iso(item)).timestamp()
+                    )
+                    if item_epoch <= since_epoch:
+                        stopped_early = True
+                        break  # assumes newest-first order — see architecture doc Risks/tradeoffs
+                    activities.append(item)
+                if stopped_early:
+                    break
+            else:
+                activities.extend(batch)
             page += 1
         return activities
 
     def normalize(self, raw: dict[str, Any]) -> dict[str, Any]:
-        """Identical field mapping to StravaConnector.normalize() — the
-        activities-list JSON shape is the same REST endpoint either way,
-        cookie or OAuth."""
+        """Maps the web endpoint's *_raw fields onto the same internal
+        shape this connector has always produced. Units, per the BO's
+        evidence + REST-API-naming-convention inference (flagged, not
+        confirmed — see architecture doc Risks/tradeoffs):
+          - distance_raw: meters (float), same unit REST's `distance` used.
+          - elapsed_time_raw / moving_time_raw: seconds (int). `duration_s`
+            uses elapsed_time_raw specifically, for parity with the REST
+            connector's `elapsed_time` (total elapsed, not moving-only).
+          - elevation_gain_raw: meters (float) — has no home in the current
+            canonical shape, so it is read nowhere (not fabricated into an
+            existing field, not silently dropped as an error either — just
+            genuinely out of this issue's scope).
+        """
         return {
             "provider": PROVIDER,
             "external_id": str(raw["id"]),
-            "start_time": raw["start_date"],
-            "duration_s": raw["elapsed_time"],
-            "discipline_raw": raw.get("sport_type") or raw.get("type"),
-            "avg_hr": int(raw["average_heartrate"]) if raw.get("average_heartrate") is not None else None,
-            "max_hr": raw.get("max_heartrate"),
-            "avg_power": int(raw["average_watts"]) if raw.get("average_watts") is not None else None,
-            "max_power": raw.get("max_watts"),
-            "distance_m": raw.get("distance"),
-            # Never fabricated — the activities-list endpoint doesn't
-            # report this via cookie auth any more than it does via OAuth
-            # (same KNOWN LIMITATION as StravaConnector).
+            "start_time": _extract_start_time_iso(raw),
+            "duration_s": raw["elapsed_time_raw"],
+            "discipline_raw": raw.get("activity_type_display_name") or raw.get("display_type"),
+            # Per requirements AC4 / open question 2: no HR, power, or
+            # calories field appears anywhere in the BO's captured field
+            # list for this endpoint. Never fabricated — stays None,
+            # exactly like today's "never reported by this endpoint" fields.
+            "avg_hr": None,
+            "max_hr": None,
+            "avg_power": None,
+            "max_power": None,
+            "distance_m": raw.get("distance_raw"),
             "calories": None,
             "synced_at": datetime.now(timezone.utc).isoformat(),
         }
+
+
+def _extract_start_time_iso(raw: dict[str, Any]) -> str:
+    for key in _START_FIELD_CANDIDATES:
+        if key in raw and raw[key] is not None:
+            value = raw[key]
+            if key.endswith("_raw") and isinstance(value, (int, float)):
+                # Assumed Unix epoch seconds, consistent with the other
+                # *_raw fields being machine/numeric values rather than
+                # display strings. Timezone of "local_raw" is unconfirmed
+                # (local vs. UTC) — see architecture doc Risks/tradeoffs.
+                return datetime.fromtimestamp(value, tz=timezone.utc).isoformat()
+            return str(value)  # assume already a parseable date/ISO string
+    raise StravaUnofficialHTTPError(
+        f"{PROVIDER}: no recognized start-time field in training_activities "
+        f"item (tried {_START_FIELD_CANDIDATES}) — payload shape has "
+        f"changed since issue #30's evidence; Developer/BO must re-capture "
+        f"a live sample and update _START_FIELD_CANDIDATES"
+    )
 
 
 def _parse_retry_after(response: Any) -> float | None:
@@ -254,6 +371,11 @@ class _RequestsSession:
     def get(self, url: str, params: dict | None = None, headers: dict | None = None):
         import requests as _requests
         try:
-            return self._session.get(url, params=params, headers=headers, timeout=30)
+            # allow_redirects=False: a 3xx (redirect to Strava's login
+            # page) must surface as a 3xx to _authenticated_get, not be
+            # silently followed to a 200 HTML page (issue #30).
+            return self._session.get(
+                url, params=params, headers=headers, timeout=30, allow_redirects=False
+            )
         except _requests.exceptions.RequestException as exc:
             raise _TransientHTTPCondition(str(exc)) from exc
