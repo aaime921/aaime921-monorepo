@@ -37,6 +37,7 @@ directly by diagnostic.log rather than debugged from scratch.
 
 from __future__ import annotations
 
+import argparse
 import sys
 from pathlib import Path
 
@@ -52,7 +53,7 @@ from trainiq.connectors.strava_unofficial import StravaUnofficialConnector
 from trainiq.credentials.store import CredentialStore
 from trainiq.logging_setup import configure, diagnostic_logger, summary_logger
 from trainiq.safety import RunningFromTrashError, assert_not_running_from_trash
-from trainiq.setup_wizard import run_first_time_setup
+from trainiq.setup_wizard import run_configure, run_first_time_setup
 from trainiq.storage.schema import open_db
 from trainiq.sync.engine import SynchronizationEngine
 
@@ -61,7 +62,39 @@ LOG_DIR = Path.home() / "Library" / "Logs" / "TrainIQ"
 CONFIG_PATH = APP_SUPPORT_DIR / "config.json"
 
 
-def _build_configured_connectors(credential_store: CredentialStore, config_path: Path) -> list[Connector]:
+class _Reporter:
+    """Wraps a loguru-bound logger. Every call both logs exactly as before
+    AND appends the same message to self.lines, in order — giving callers
+    (main()) a way to also print to stdout what's already being logged to
+    the file sinks, without changing any existing log content."""
+
+    def __init__(self, log) -> None:
+        self._log = log
+        self.lines: list[str] = []
+
+    def info(self, msg: str) -> None:
+        self._log.info(msg)
+        self.lines.append(msg)
+
+    def warning(self, msg: str) -> None:
+        self._log.warning(msg)
+        self.lines.append(msg)
+
+
+def _parse_args(argv: list[str] | None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(prog="trainiq")
+    parser.add_argument(
+        "--configure", action="store_true",
+        help="Add or reconfigure a connector, even if one or more are already configured.",
+    )
+    return parser.parse_args(argv)
+
+
+def _build_configured_connectors(
+    credential_store: CredentialStore,
+    config_path: Path,
+    reporter: "_Reporter | None" = None,
+) -> list[Connector]:
     """Attempts to construct each known connector from whatever is
     currently in CredentialStore (and, for Eufy, config_path). A connector
     that isn't configured (no stored credentials yet — the expected state
@@ -69,28 +102,28 @@ def _build_configured_connectors(credential_store: CredentialStore, config_path:
     is logged and skipped, never fatal — Graceful Degradation (ADR-009)
     applied at composition time, before any connector ever reaches the
     Sync Engine."""
-    log = summary_logger()
+    report = reporter if reporter is not None else _Reporter(summary_logger())
     connectors: list[Connector] = []
 
     # --- Strava ---
     try:
         if credential_store.get("strava", "refresh_token"):
             connectors.append(StravaConnector(credential_store))
-            log.info("Strava: configured")
+            report.info("Strava: configured")
         else:
-            log.info("Strava: skipped (not connected)")
+            report.info("Strava: skipped (not connected)")
     except Exception as exc:  # noqa: BLE001 - composition-time isolation is the point
-        log.warning(f"Strava: skipped (construction failed: {exc})")
+        report.warning(f"Strava: skipped (construction failed: {exc})")
 
     # --- Strava (unofficial, session-cookie) ---
     try:
         if credential_store.get(STRAVA_UNOFFICIAL_PROVIDER, STRAVA_UNOFFICIAL_CRED_SESSION_COOKIE):
             connectors.append(StravaUnofficialConnector(credential_store))
-            log.info("Strava (unofficial): configured")
+            report.info("Strava (unofficial): configured")
         else:
-            log.info("Strava (unofficial): skipped (not connected)")
+            report.info("Strava (unofficial): skipped (not connected)")
     except Exception as exc:  # noqa: BLE001 - composition-time isolation is the point
-        log.warning(f"Strava (unofficial): skipped (construction failed: {exc})")
+        report.warning(f"Strava (unofficial): skipped (construction failed: {exc})")
 
     # --- Peloton ---
     try:
@@ -99,11 +132,11 @@ def _build_configured_connectors(credential_store: CredentialStore, config_path:
         )
         if has_peloton_creds:
             connectors.append(PelotonConnector(credential_store))
-            log.info("Peloton: configured")
+            report.info("Peloton: configured")
         else:
-            log.info("Peloton: skipped (not connected)")
+            report.info("Peloton: skipped (not connected)")
     except Exception as exc:  # noqa: BLE001
-        log.warning(f"Peloton: skipped (construction failed: {exc})")
+        report.warning(f"Peloton: skipped (construction failed: {exc})")
 
     # --- Eufy ---
     try:
@@ -113,26 +146,26 @@ def _build_configured_connectors(credential_store: CredentialStore, config_path:
         eufy_device_id = get_eufy_device_id(config_path)
         if has_eufy_creds and eufy_device_id:
             connectors.append(EufyConnector(credential_store, device_id=eufy_device_id))
-            log.info("Eufy: configured")
+            report.info("Eufy: configured")
         elif has_eufy_creds and not eufy_device_id:
-            log.info("Eufy: skipped (missing device_id in config.json)")
+            report.info("Eufy: skipped (missing device_id in config.json)")
         else:
-            log.info("Eufy: skipped (not connected)")
+            report.info("Eufy: skipped (not connected)")
     except Exception as exc:  # noqa: BLE001
-        log.warning(f"Eufy: skipped (construction failed: {exc})")
+        report.warning(f"Eufy: skipped (construction failed: {exc})")
 
     return connectors
 
 
-def _log_sync_summary(result) -> None:
-    log = summary_logger()
+def _log_sync_summary(result, reporter: "_Reporter | None" = None) -> None:
+    report = reporter if reporter is not None else _Reporter(summary_logger())
     for r in result.connector_results:
         if r.error:
-            log.warning(f"{r.provider}: {r.state.value} — {r.error}")
+            report.warning(f"{r.provider}: {r.state.value} — {r.error}")
         elif r.skipped_reason:
-            log.info(f"{r.provider}: skipped this run — {r.skipped_reason}")
+            report.info(f"{r.provider}: skipped this run — {r.skipped_reason}")
         else:
-            log.info(
+            report.info(
                 f"{r.provider}: downloaded "
                 f"{r.records_inserted + r.records_updated + r.records_malformed + r.records_skipped}, "
                 f"inserted {r.records_inserted}, updated {r.records_updated}, "
@@ -140,7 +173,13 @@ def _log_sync_summary(result) -> None:
             )
 
 
-def main() -> int:
+def _print_log_locations() -> None:
+    print(f"\nFull logs: {LOG_DIR / 'summary.log'}, {LOG_DIR / 'diagnostic.log'}")
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parse_args(argv)
+
     configure(LOG_DIR)
     log = summary_logger()
     log.info("Starting TrainIQ")
@@ -157,14 +196,25 @@ def main() -> int:
     conn = open_db(db_path)
 
     credential_store = CredentialStore(conn=conn)
-    connectors = _build_configured_connectors(credential_store, CONFIG_PATH)
+    reporter = _Reporter(log)
+    connectors = _build_configured_connectors(credential_store, CONFIG_PATH, reporter=reporter)
 
-    if not connectors:
+    if args.configure:
+        run_configure(credential_store, CONFIG_PATH, status_lines=reporter.lines)
+        reporter = _Reporter(log)
+        connectors = _build_configured_connectors(credential_store, CONFIG_PATH, reporter=reporter)
+    elif not connectors:
         run_first_time_setup(credential_store, CONFIG_PATH)
-        connectors = _build_configured_connectors(credential_store, CONFIG_PATH)
+        reporter = _Reporter(log)
+        connectors = _build_configured_connectors(credential_store, CONFIG_PATH, reporter=reporter)
+
+    for line in reporter.lines:
+        print(line)
 
     if not connectors:
         log.info("Nothing to synchronize.")
+        print("Nothing to synchronize.")
+        _print_log_locations()
         conn.close()
         return 0
 
@@ -172,7 +222,11 @@ def main() -> int:
     log.info(f"Running synchronization ({len(connectors)} connector(s))")
     engine = SynchronizationEngine(conn, athlete_profile=athlete_profile)
     result = engine.run_once(connectors)
-    _log_sync_summary(result)
+    sync_reporter = _Reporter(log)
+    _log_sync_summary(result, reporter=sync_reporter)
+    for line in sync_reporter.lines:
+        print(line)
+    _print_log_locations()
 
     conn.close()
     return 0
