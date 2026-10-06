@@ -27,6 +27,7 @@ from trainiq.setup_wizard import (
     _setup_peloton,
     _setup_strava,
     _setup_strava_unofficial,
+    run_configure,
     run_first_time_setup,
 )
 from trainiq.storage.schema import open_db
@@ -503,3 +504,61 @@ def test_cancellation_during_peloton_preserves_already_configured_strava(store, 
     # Strava's credentials from the earlier, separate, successful step
     # remain untouched by this later cancellation.
     assert store.get(STRAVA_PROVIDER, STRAVA_CRED_REFRESH_TOKEN) == "r"
+
+
+# --- run_configure() ---------------------------------------------------------
+
+def test_run_configure_prints_current_connectors_header(store, config_path, monkeypatch, capsys):
+    monkeypatch.setattr("builtins.input", _scripted_input("n", "n", "n", "n"))
+
+    run_configure(store, config_path, status_lines=["Strava: configured", "Peloton: skipped (not connected)"])
+
+    captured = capsys.readouterr()
+    assert "Current connectors:" in captured.out
+    assert "Strava: configured" in captured.out
+    assert "Peloton: skipped (not connected)" in captured.out
+
+
+def test_run_configure_reconfigures_an_existing_connector_leaving_others_untouched(
+    store, config_path, monkeypatch
+):
+    """Pre-seed Peloton credentials, then run_configure() answering "y" to
+    reconfigure Peloton only (declining Strava, Strava-unofficial, Eufy):
+    Peloton's stored credential must change to the new value, and the
+    other three providers must remain exactly as they were (absent)."""
+    import trainiq.setup_wizard as wizard_module
+
+    store.set(PELOTON_PROVIDER, PELOTON_CRED_EMAIL, "old@example.com")
+    store.set(PELOTON_PROVIDER, PELOTON_CRED_PASSWORD, "old-password")
+
+    class _FakePelotonConnector:
+        def __init__(self, credential_store, session=None):
+            pass
+
+        def authenticate(self):
+            return True
+
+    monkeypatch.setattr(wizard_module, "PelotonConnector", _FakePelotonConnector)
+    # Order of prompts: Strava (decline), Strava-unofficial (decline),
+    # Peloton (accept + new email), Eufy (decline).
+    monkeypatch.setattr("builtins.input", _scripted_input("n", "n", "y", "new@example.com", "n"))
+    monkeypatch.setattr("getpass.getpass", lambda *_a: "new-password")
+
+    run_configure(store, config_path, status_lines=["Peloton: configured"])
+
+    assert store.get(PELOTON_PROVIDER, PELOTON_CRED_EMAIL) == "new@example.com"
+    assert store.get(PELOTON_PROVIDER, PELOTON_CRED_PASSWORD) == "new-password"
+    assert store.get(STRAVA_PROVIDER, STRAVA_CRED_REFRESH_TOKEN) is None
+    assert store.get(EUFY_PROVIDER, EUFY_CRED_EMAIL) is None
+
+
+def test_run_configure_cancellation_prints_configuration_cancelled(store, config_path, monkeypatch, capsys):
+    def _raise_interrupt(*_a):
+        raise KeyboardInterrupt()
+
+    monkeypatch.setattr("builtins.input", _raise_interrupt)
+
+    run_configure(store, config_path, status_lines=[])  # must not raise
+
+    captured = capsys.readouterr()
+    assert "Configuration cancelled." in captured.out

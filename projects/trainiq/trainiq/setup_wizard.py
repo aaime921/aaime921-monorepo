@@ -283,14 +283,49 @@ def _setup_eufy(credential_store: CredentialStore, config_path: Path, session=No
     return True
 
 
+def _run_provider_setup_steps(credential_store: CredentialStore, config_path: Path) -> None:
+    """Shared body for both run_first_time_setup() and run_configure(): the
+    four per-provider setup steps, in the same fixed order, under the same
+    SetupCancelled propagation — exactly one implementation of 'ask about
+    each provider' for both paths to share, so a behavior change to one
+    provider's prompt affects both identically, by construction."""
+    _setup_strava(credential_store)
+    _setup_strava_unofficial(credential_store)
+    _setup_peloton(credential_store)
+    _setup_eufy(credential_store, config_path)
+
+
 def run_first_time_setup(credential_store: CredentialStore, config_path: Path) -> None:
     print("No providers are configured yet. Let's connect at least one.\n")
     try:
-        _setup_strava(credential_store)
-        _setup_strava_unofficial(credential_store)
-        _setup_peloton(credential_store)
-        _setup_eufy(credential_store, config_path)
+        _run_provider_setup_steps(credential_store, config_path)
     except SetupCancelled:
         print("\nSetup cancelled.")
         return
     print("\nSetup complete.")
+
+
+def run_configure(
+    credential_store: CredentialStore,
+    config_path: Path,
+    status_lines: list[str],
+) -> None:
+    """Explicit add/reconfigure entry point, triggered by `--configure`
+    regardless of how many connectors are currently configured. Shows the
+    already-computed per-provider status as a header, then runs the same
+    four prompts first-time setup uses. Answering "y" to an
+    already-configured provider naturally reconfigures it —
+    credential_store.set() overwrites the existing entry, and every
+    _setup_* function already validates-then-stores (or rolls back on
+    failure) regardless of prior state. Answering "n" leaves that
+    provider's existing credentials untouched."""
+    print("Current connectors:")
+    for line in status_lines:
+        print(f"  {line}")
+    print()
+    try:
+        _run_provider_setup_steps(credential_store, config_path)
+    except SetupCancelled:
+        print("\nConfiguration cancelled.")
+        return
+    print("\nConfiguration complete.")

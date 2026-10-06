@@ -219,7 +219,7 @@ def test_main_aborts_with_clear_error_when_running_from_trash(isolated_app_dirs,
 
     monkeypatch.setattr(app_module, "assert_not_running_from_trash", _fake_check)
 
-    exit_code = app_module.main()
+    exit_code = app_module.main(argv=[])
 
     assert exit_code == 1
     captured = capsys.readouterr()
@@ -242,7 +242,7 @@ def test_main_logs_executing_package_path_on_normal_startup(isolated_app_dirs, m
 
     monkeypatch.setattr(app_module, "summary_logger", lambda: _CapturingLogger())
 
-    app_module.main()
+    app_module.main(argv=[])
 
     assert any("Executing package:" in m for m in logged.get("messages", []))
 
@@ -257,7 +257,7 @@ def test_main_with_no_credentials_triggers_wizard_then_exits_cleanly(isolated_ap
     also handled defensively in setup_wizard.py itself, not just worked
     around here)."""
     monkeypatch.setattr("builtins.input", lambda *_args: "n")
-    exit_code = main()
+    exit_code = main(argv=[])
     assert exit_code == 0
 
 
@@ -272,7 +272,7 @@ def test_main_wizard_cancellation_via_eof_exits_cleanly_with_nothing_saved(isola
         raise EOFError()
 
     monkeypatch.setattr("builtins.input", _raise_eof)
-    exit_code = main()
+    exit_code = main(argv=[])
     assert exit_code == 0
 
 
@@ -352,9 +352,158 @@ def test_main_continues_when_one_connector_cannot_be_constructed(isolated_app_di
     # Deliberately no config.json / no device_id for Eufy.
     conn.close()
 
-    exit_code = app_module.main()
+    exit_code = app_module.main(argv=[])
 
     assert exit_code == 0  # the application itself never stops or errors
 
     connectors = _build_configured_connectors(CredentialStore(conn=_open_db(db_path)), cfg_path)
     assert {c.provider for c in connectors} == {STRAVA_PROVIDER, PELOTON_PROVIDER}
+
+
+# --- _Reporter ---------------------------------------------------------------
+
+def test_reporter_logs_and_collects_lines_in_order():
+    import trainiq.app as app_module
+
+    logged = []
+
+    class _CapturingLogger:
+        def info(self, msg):
+            logged.append(("info", msg))
+
+        def warning(self, msg):
+            logged.append(("warning", msg))
+
+    report = app_module._Reporter(_CapturingLogger())
+    report.info("first")
+    report.warning("second")
+
+    assert logged == [("info", "first"), ("warning", "second")]
+    assert report.lines == ["first", "second"]
+
+
+# --- Console feedback on every run (AC2/AC3) --------------------------------
+
+class _FakeOKConnectorForSync:
+    supports_incremental_sync = True
+
+    def __init__(self, credential_store):
+        self.provider = "fake"
+
+    def authenticate(self):
+        return True
+
+    def download(self, since=None):
+        return []
+
+    def normalize(self, raw):
+        return raw
+
+    def get_state(self):
+        from trainiq.connectors.base import ConnectorState
+        return ConnectorState.HEALTHY
+
+    def restore_state(self, state):
+        pass
+
+    def transition_state(self, to_state, detail=None):
+        pass
+
+    def active_strategy(self):
+        return None
+
+    record_kind = None
+
+
+def _make_fake_sync_connector(provider_name):
+    class _Fake(_FakeOKConnectorForSync):
+        def __init__(self, credential_store):
+            super().__init__(credential_store)
+            self.provider = provider_name
+    from trainiq.connectors.base import RecordKind
+    _Fake.record_kind = RecordKind.ACTIVITY
+    return _Fake
+
+
+def test_main_prints_console_summary_of_connector_status_and_sync_results(isolated_app_dirs, monkeypatch, capsys):
+    """AC2/AC3: a normal run (not first-time setup, at least one connector
+    already configured) must print, to stdout, per-connector configured/
+    skipped status and sync results, plus where the full logs live — this
+    information previously only ever reached summary.log/diagnostic.log."""
+    import trainiq.app as app_module
+
+    monkeypatch.setattr(app_module, "StravaConnector", _make_fake_sync_connector(STRAVA_PROVIDER))
+
+    app_support, log_dir, cfg_path = isolated_app_dirs
+    app_support.mkdir(parents=True, exist_ok=True)
+    db_path = app_support / "trainiq.db"
+
+    from trainiq.storage.schema import open_db as _open_db
+    conn = _open_db(db_path)
+    store = CredentialStore(conn=conn)
+    store.set(STRAVA_PROVIDER, "refresh_token", "token")
+    conn.close()
+
+    exit_code = app_module.main(argv=[])
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "Strava: configured" in captured.out
+    assert "Peloton: skipped (not connected)" in captured.out
+    assert "strava: downloaded 0, inserted 0, updated 0, malformed 0, skipped 0" in captured.out
+    assert str(log_dir / "summary.log") in captured.out
+    assert str(log_dir / "diagnostic.log") in captured.out
+
+
+# --- --configure flag --------------------------------------------------------
+
+def test_main_configure_flag_with_zero_connectors_runs_configure_not_first_time_wizard(isolated_app_dirs, monkeypatch):
+    """--configure must drive run_configure(), never run_first_time_setup(),
+    even when zero connectors are configured — proven by making
+    run_first_time_setup raise if it's ever called."""
+    import trainiq.app as app_module
+
+    def _fail_if_called(*_args, **_kwargs):
+        raise AssertionError("run_first_time_setup must not be called when --configure is passed")
+
+    monkeypatch.setattr(app_module, "run_first_time_setup", _fail_if_called)
+    monkeypatch.setattr("builtins.input", lambda *_args: "n")
+
+    exit_code = app_module.main(argv=["--configure"])
+
+    assert exit_code == 0
+
+
+def test_main_configure_flag_with_one_connector_shows_header_and_preserves_declined_credentials(
+    isolated_app_dirs, monkeypatch, capsys
+):
+    """--configure with one connector already configured (Strava) must (a)
+    show it in the "Current connectors" header, (b) leave its credentials
+    untouched when the user declines reconfiguring it, and (c) not also
+    trigger run_first_time_setup()."""
+    import trainiq.app as app_module
+
+    app_support, log_dir, cfg_path = isolated_app_dirs
+    app_support.mkdir(parents=True, exist_ok=True)
+    db_path = app_support / "trainiq.db"
+
+    from trainiq.storage.schema import open_db as _open_db
+    conn = _open_db(db_path)
+    store = CredentialStore(conn=conn)
+    store.set(STRAVA_PROVIDER, "refresh_token", "existing-token")
+    conn.close()
+
+    def _fail_if_called(*_args, **_kwargs):
+        raise AssertionError("run_first_time_setup must not be called when --configure is passed")
+
+    monkeypatch.setattr(app_module, "run_first_time_setup", _fail_if_called)
+    monkeypatch.setattr("builtins.input", lambda *_args: "n")
+
+    exit_code = app_module.main(argv=["--configure"])
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "Strava: configured" in captured.out
+
+    store = CredentialStore(conn=_open_db(db_path))
+    assert store.get(STRAVA_PROVIDER, "refresh_token") == "existing-token"
