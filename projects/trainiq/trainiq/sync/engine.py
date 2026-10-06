@@ -500,7 +500,7 @@ class SynchronizationEngine:
                 # to determine with certainty which side of the comparison
                 # below is still an int, without changing the comparison's
                 # logic, types, or behavior in any way.
-                diagnostic_logger().error(
+                diagnostic_logger().debug(
                     "DEBUG CURSORS: candidate={!r} ({}) resume={!r} ({})",
                     candidate_cursor, type(candidate_cursor).__name__,
                     resume_cursor, type(resume_cursor).__name__,

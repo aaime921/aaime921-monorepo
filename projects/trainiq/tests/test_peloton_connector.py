@@ -647,6 +647,22 @@ def test_normalize_logs_unrecognized_discipline_without_dropping_the_record(cred
     assert result["external_id"] == "3"
 
 
+# --- Issue #33: extract_resume_cursor() must always return a str --------
+
+def test_extract_resume_cursor_coerces_int_start_time_to_str(credential_store):
+    fake = FakePelotonSession()
+    connector = PelotonConnector(credential_store, session=fake)
+
+    assert connector.extract_resume_cursor({"start_time": 1790014244}) == "1790014244"
+
+
+def test_extract_resume_cursor_missing_start_time_returns_none(credential_store):
+    fake = FakePelotonSession()
+    connector = PelotonConnector(credential_store, session=fake)
+
+    assert connector.extract_resume_cursor({}) is None
+
+
 # --- End-to-end: PelotonConnector through the real Synchronization Engine --
 
 def test_end_to_end_automated_login_sync(db, credential_store):
@@ -679,6 +695,63 @@ def test_end_to_end_automated_login_sync(db, credential_store):
     disciplines = {r["external_id"]: r["discipline"] for r in canonical_rows}
     assert disciplines["1"] == "cycling"
     assert disciplines["2"] == "strength"  # never "cycling"/"ride"
+
+
+def test_end_to_end_sync_with_preexisting_str_checkpoint_does_not_raise(db, credential_store):
+    """Issue #33 regression: reproduces the BO's logged crash — a
+    `sync_checkpoints` row already persisted with `last_cursor` as a str
+    (as every row does, via SQLite TEXT affinity, even pre-fix) must not
+    raise TypeError when compared against a freshly downloaded int-shaped
+    `start_time`. Uses the exact logged values: persisted resume
+    `'1790883770'`, candidate `1791134056`."""
+    credential_store.set(PROVIDER, CRED_EMAIL, "athlete@example.com")
+    credential_store.set(PROVIDER, CRED_PASSWORD, "pw")
+    fake = FakePelotonSession()
+    fake.script_post_response(_login_success_response())
+    fake.script_get_response(FakeResponse(200, {"id": "u1"}))
+    fake.script_get_response(FakeResponse(200, {"data": [
+        {"id": 1, "start_time": 1791134056, "end_time": 1791135856, "fitness_discipline": "cycling"},
+    ], "show_next": False}))
+    connector = PelotonConnector(credential_store, session=fake)
+    engine = SynchronizationEngine(db)
+    engine._set_checkpoint(PROVIDER, "1790883770", strategy="default")
+
+    result = engine.run_once([connector])
+
+    assert result.connector_results[0].state == ConnectorState.HEALTHY
+    assert engine.get_checkpoint("peloton") == "1791134056"
+
+
+def test_end_to_end_two_consecutive_syncs_cursor_advances_without_error(db, credential_store):
+    """Issue #33 regression: the full extraction -> persist -> reload cycle
+    across two separate sync runs against the same DB, which is the path
+    that was actually broken (a unit test of extract_resume_cursor() alone
+    would not catch the SQLite TEXT-affinity round trip)."""
+    credential_store.set(PROVIDER, CRED_EMAIL, "athlete@example.com")
+    credential_store.set(PROVIDER, CRED_PASSWORD, "pw")
+    fake = FakePelotonSession()
+    fake.script_post_response(_login_success_response())
+    fake.script_get_response(FakeResponse(200, {"id": "u1"}))
+    fake.script_get_response(FakeResponse(200, {"data": [
+        {"id": 1, "start_time": 1790883770, "end_time": 1790885570, "fitness_discipline": "cycling"},
+    ], "show_next": False}))
+    connector = PelotonConnector(credential_store, session=fake)
+    engine = SynchronizationEngine(db)
+
+    first_result = engine.run_once([connector])
+
+    assert first_result.connector_results[0].state == ConnectorState.HEALTHY
+    assert engine.get_checkpoint("peloton") == "1790883770"
+
+    fake.script_get_response(FakeResponse(200, {"id": "u1"}))
+    fake.script_get_response(FakeResponse(200, {"data": [
+        {"id": 2, "start_time": 1791134056, "end_time": 1791135856, "fitness_discipline": "cycling"},
+    ], "show_next": False}))
+
+    second_result = engine.run_once([connector])
+
+    assert second_result.connector_results[0].state == ConnectorState.HEALTHY
+    assert engine.get_checkpoint("peloton") == "1791134056"
 
 
 def test_end_to_end_repeated_auth_failure_transitions_to_degraded(db, credential_store):

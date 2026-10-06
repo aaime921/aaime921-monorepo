@@ -493,10 +493,14 @@ class PelotonConnector(Connector):
         }
 
     def extract_resume_cursor(self, normalized: dict[str, Any]) -> str | None:
-        # RawActivity-shaped output (start_time) — the Connector base
-        # class's default already does exactly this; overridden here only
-        # for explicitness/documentation, not because the default is wrong.
-        return normalized.get("start_time")
+        # Peloton's `start_time` is a raw epoch int (unlike Strava's, which
+        # is already an ISO 8601 string), but `sync_checkpoints.last_cursor`
+        # round-trips through SQLite's TEXT column affinity as a str. Coerce
+        # here so extraction, persistence, and reload all agree on str and
+        # the Sync Engine's `candidate_cursor > resume_cursor` comparison
+        # never mixes int and str (issue #33).
+        start_time = normalized.get("start_time")
+        return str(start_time) if start_time is not None else None
 
 
 def _parse_retry_after(response: Any) -> float | None:
