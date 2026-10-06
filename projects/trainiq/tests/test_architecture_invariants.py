@@ -45,6 +45,12 @@ TRAINIQ_ROOT = Path(__file__).resolve().parent.parent / "trainiq"
 _AUTHORIZED_INGESTION_ENTRY_POINTS: frozenset[tuple[str, str]] = frozenset({
     ("sync", "engine.py"),
     ("csv_import", "peloton_csv.py"),
+    # Issue #36: the one-off re-normalization pass for already-stored
+    # raw_activities rows (e.g. strava_unofficial's taxonomy fix). Reads
+    # existing raw payloads and re-derives canonical records through the
+    # same build_canonical_record() + upsert_normalized_activity() path a
+    # live sync uses — a deliberate third entry point, not a bypass.
+    ("normalization", "renormalize.py"),
 })
 
 
