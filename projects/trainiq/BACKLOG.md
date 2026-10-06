@@ -182,17 +182,19 @@ remains the working fallback in the meantime.
 
 ### BL-001 — Review `stravalib` releases before January 2027
 **Raised:** Epic 1 self-review, carried forward from Milestone 1 (R-STRAVA-02).
+**Corrected (2026-10, #29):** this item originally stated Strava's API base URL migrates from `api.strava.com` to `api-v3.strava.com`. `api.strava.com` has no DNS record and was never a valid Strava host (confirmed on #26). The real migration, per Strava's own developer changelog / community-hub announcement, is from `https://www.strava.com/api/v3` — the actual current host, also independently confirmed as `stravalib`'s own hardcoded `ApiV3.server` value — to `https://api-v3.strava.com`, available 2027-01-04, final deadline 2027-06-01. See ADR-007 for the same correction. The naming error doesn't change the underlying action item: `stravalib` still owns this host internally, and TrainIQ still depends on the maintainers migrating it before the deadline.
 **Why it's here, not just in a comment:** Strava's API base URL migrates from
-`api.strava.com` to `api-v3.strava.com` on **January 4, 2027**. `stravalib`
-v2.5.0 hardcodes the old URL internally (`ApiV3.server`), not exposed as a
-constructor override. TrainIQ's own code never hardcodes it (ADR-007 is
-satisfied at our layer), but the actual mitigation depends entirely on the
-`stravalib` maintainers updating their library before that date.
+`www.strava.com/api/v3` to `api-v3.strava.com` on **January 4, 2027** (final
+cutover deadline June 1, 2027). `stravalib` v2.5.0 hardcodes the current URL
+internally (`ApiV3.server = "www.strava.com"`), not exposed as a constructor
+override. TrainIQ's own code never hardcodes it (ADR-007 is satisfied at our
+layer), but the actual mitigation depends entirely on the `stravalib`
+maintainers updating their library before that date.
 **Action required:** check `stravalib`'s changelog/releases in Q4 2026; if no
 fix has shipped by then, this becomes a real blocker requiring either a
 patched fork, a monkey-patch of `ApiV3.server`, or a move away from
 `stravalib` entirely for the base-URL portion of the client.
-**Status:** Open, not urgent for the base-URL migration itself (six months of runway as of this writing) but still required before RC1 per the Product Owner's live-verification priority. **Verification protocol:** `docs/verification/PROTOCOL.md`.
+**Status:** Open, not urgent for the base-URL migration itself (roughly three months of runway as of this writing, 2026-10) but still required before RC1 per the Product Owner's live-verification priority. **Verification protocol:** `docs/verification/PROTOCOL.md`.
 
 ### BL-002 — Normalization mapping contract: partially resolved by Epic 6, typed-key contract still missing
 **Raised:** Epic 0 self-review, Finding 1. **Rewritten:** Epic 7 Discovery Report, per Chief Architect direction — the original wording described the pre-Epic-6 situation and no longer reflects reality.
