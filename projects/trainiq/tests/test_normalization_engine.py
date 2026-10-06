@@ -95,3 +95,75 @@ def test_weigh_in_record_has_no_source_confidence_key_pending_bl_009():
     record = build_canonical_record("eufy", RecordKind.WEIGH_IN, normalized)
 
     assert "source_confidence" not in record
+
+
+# --- WEIGH_IN plausibility flagging (ADR-039 / Issue #38) ----------------
+
+_BASELINE = [84.0, 85.0, 85.5, 86.0, 83.5]  # athlete's established 80-88kg range
+
+
+def test_weigh_in_normal_reading_within_baseline_is_not_flagged():
+    normalized = {
+        "external_id": "w4", "timestamp": "2026-01-05T06:30:00+00:00",
+        "weight_kg": 85.0, "body_fat_pct": 18.0,
+    }
+
+    record = build_canonical_record(
+        "eufy", RecordKind.WEIGH_IN, normalized, recent_weights_kg=_BASELINE
+    )
+
+    assert record["is_flagged_implausible"] is False
+    assert record["plausibility_reason"] is None
+
+
+def test_weigh_in_obvious_outlier_reproducing_issue_evidence_is_flagged():
+    """Reproduces the issue's own evidence: 20.7 kg / 5.0% body fat against
+    an 80+ kg baseline."""
+    normalized = {
+        "external_id": "w5", "timestamp": "2026-07-06T18:43:00+00:00",
+        "weight_kg": 20.7, "body_fat_pct": 5.0,
+    }
+
+    record = build_canonical_record(
+        "eufy", RecordKind.WEIGH_IN, normalized, recent_weights_kg=_BASELINE
+    )
+
+    assert record["is_flagged_implausible"] is True
+    assert record["plausibility_reason"] is not None
+
+
+def test_weigh_in_borderline_reading_resolves_deterministically():
+    """Median of _BASELINE is 85.0; 25% deviation threshold -> 63.75 is the
+    exact boundary (strict '>' means not flagged)."""
+    at_boundary = {
+        "external_id": "w6", "timestamp": "2026-01-05T06:30:00+00:00",
+        "weight_kg": 63.75, "body_fat_pct": 18.0,
+    }
+    just_over = {
+        "external_id": "w7", "timestamp": "2026-01-05T06:30:00+00:00",
+        "weight_kg": 63.0, "body_fat_pct": 18.0,
+    }
+
+    record_at_boundary = build_canonical_record(
+        "eufy", RecordKind.WEIGH_IN, at_boundary, recent_weights_kg=_BASELINE
+    )
+    record_just_over = build_canonical_record(
+        "eufy", RecordKind.WEIGH_IN, just_over, recent_weights_kg=_BASELINE
+    )
+
+    assert record_at_boundary["is_flagged_implausible"] is False
+    assert record_just_over["is_flagged_implausible"] is True
+
+
+def test_weigh_in_with_no_recent_weights_defaults_to_not_flagged():
+    """A connector/caller that doesn't pass recent_weights_kg (e.g. existing
+    callers before this feature) gets the old pass-through behavior —
+    insufficient history skips the weight-deviation axis entirely."""
+    normalized = {
+        "external_id": "w8", "timestamp": "2026-01-05T06:30:00+00:00",
+        "weight_kg": 20.0, "body_fat_pct": 18.0,
+    }
+
+    record = build_canonical_record("eufy", RecordKind.WEIGH_IN, normalized)
+
+    assert record["is_flagged_implausible"] is False

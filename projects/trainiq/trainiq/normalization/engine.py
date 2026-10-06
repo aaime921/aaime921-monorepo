@@ -18,12 +18,13 @@ either).
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
 from trainiq.athlete.profile import AthleteProfile
 from trainiq.connectors.base import RecordKind
 from trainiq.normalization.confidence import compute_source_confidence
 from trainiq.normalization.load import compute_training_load
+from trainiq.normalization.plausibility import evaluate_weigh_in_plausibility
 from trainiq.normalization.taxonomy import map_discipline
 
 
@@ -32,14 +33,16 @@ def build_canonical_record(
     record_kind: RecordKind,
     normalized: dict[str, Any],
     athlete_profile: Optional[AthleteProfile] = None,
+    recent_weights_kg: Sequence[float] = (),
 ) -> dict[str, Any]:
     """Returns a dict with exactly the columns the target table expects
     (normalized_activities or weigh_ins) — the caller (SynchronizationEngine)
     decides which table based on `record_kind`, this function only builds
-    the values."""
+    the values. `recent_weights_kg` is ignored on the ACTIVITY path — it
+    only feeds the WEIGH_IN path's plausibility check (ADR-039)."""
     if record_kind == RecordKind.ACTIVITY:
         return _build_activity_record(provider, normalized, athlete_profile)
-    return _build_weigh_in_record(provider, normalized)
+    return _build_weigh_in_record(provider, normalized, recent_weights_kg)
 
 
 def _build_activity_record(
@@ -67,7 +70,9 @@ def _build_activity_record(
     }
 
 
-def _build_weigh_in_record(provider: str, normalized: dict[str, Any]) -> dict[str, Any]:
+def _build_weigh_in_record(
+    provider: str, normalized: dict[str, Any], recent_weights_kg: Sequence[float] = ()
+) -> dict[str, Any]:
     # No discipline, no training load — Milestone 3 §4: weigh-in data has
     # neither concept.
     #
@@ -80,6 +85,16 @@ def _build_weigh_in_record(provider: str, normalized: dict[str, Any]) -> dict[st
     # persist the result today. Not fixed here — flagged as BACKLOG.md
     # BL-009 rather than silently expanding this slice's scope into a
     # schema migration that wasn't part of what was approved.
+    #
+    # ADR-039 / Issue #38: plausibility is evaluated here, independent of
+    # provider — any connector with record_kind == WEIGH_IN gets this for
+    # free. `recent_weights_kg` must already be the athlete's prior
+    # unflagged (or BO-confirmed) readings, rolling-window-limited and
+    # chronologically prior to this record — that filtering/ordering is
+    # the caller's (SynchronizationEngine's) job, not this function's.
+    verdict = evaluate_weigh_in_plausibility(
+        normalized.get("weight_kg"), normalized.get("body_fat_pct"), recent_weights_kg
+    )
     return {
         "provider": provider,
         "external_id": normalized["external_id"],
@@ -87,4 +102,6 @@ def _build_weigh_in_record(provider: str, normalized: dict[str, Any]) -> dict[st
         "weight_kg": normalized.get("weight_kg"),
         "body_fat_pct": normalized.get("body_fat_pct"),
         "muscle_mass_pct": normalized.get("muscle_mass_pct"),
+        "is_flagged_implausible": not verdict.is_plausible,
+        "plausibility_reason": verdict.reason,
     }
