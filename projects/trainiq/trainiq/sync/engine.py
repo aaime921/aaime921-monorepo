@@ -113,6 +113,56 @@ def _iso_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def upsert_normalized_activity(conn: sqlite3.Connection, record: dict) -> str:
+    """Returns "inserted" or "updated" — a REAL outcome, not an estimate.
+    Uses INSERT OR IGNORE first (cursor.rowcount is 1 only for a genuinely
+    new row, 0 on conflict — verified directly, since a single
+    INSERT...ON CONFLICT DO UPDATE statement's rowcount is always 1 in both
+    cases and cannot distinguish them). Only when the row already existed
+    does a second, explicit UPDATE statement run — meaning the common case
+    (a new record) costs exactly one statement, same as before this change.
+
+    Moved out of SynchronizationEngine (issue #36) so a one-off
+    re-normalization pass (trainiq.normalization.renormalize) can reuse
+    this exact idempotent persistence primitive instead of duplicating the
+    INSERT OR IGNORE / conditional UPDATE pattern a second time. Does not
+    commit — the caller owns the transaction boundary, same as before."""
+    cursor = conn.execute(
+        """
+        INSERT OR IGNORE INTO normalized_activities
+            (provider, external_id, start_time, duration_s, discipline, distance_m,
+             avg_hr, max_hr, avg_power, max_power, calories,
+             training_load, training_load_method, source_confidence)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            record["provider"], record["external_id"], record["start_time"], record["duration_s"],
+            record["discipline"], record["distance_m"], record["avg_hr"], record["max_hr"],
+            record["avg_power"], record["max_power"], record["calories"],
+            record["training_load"], record["training_load_method"], record["source_confidence"],
+        ),
+    )
+    if cursor.rowcount == 1:
+        return "inserted"
+
+    conn.execute(
+        """
+        UPDATE normalized_activities SET
+            start_time = ?, duration_s = ?, discipline = ?, distance_m = ?,
+            avg_hr = ?, max_hr = ?, avg_power = ?, max_power = ?, calories = ?,
+            training_load = ?, training_load_method = ?, source_confidence = ?
+        WHERE provider = ? AND external_id = ?
+        """,
+        (
+            record["start_time"], record["duration_s"], record["discipline"], record["distance_m"],
+            record["avg_hr"], record["max_hr"], record["avg_power"], record["max_power"],
+            record["calories"], record["training_load"], record["training_load_method"],
+            record["source_confidence"], record["provider"], record["external_id"],
+        ),
+    )
+    return "updated"
+
+
 def _derive_next_eligible_retry(
     state: ConnectorState, last_attempt_at: datetime, attempt_count_in_state: int
 ) -> Optional[datetime]:
@@ -197,47 +247,11 @@ class SynchronizationEngine:
 
     def _upsert_normalized_activity(self, record: dict) -> str:
         """Returns "inserted" or "updated" — a REAL outcome, not an
-        estimate. Uses INSERT OR IGNORE first (cursor.rowcount is 1 only
-        for a genuinely new row, 0 on conflict — verified directly, since
-        a single INSERT...ON CONFLICT DO UPDATE statement's rowcount is
-        always 1 in both cases and cannot distinguish them). Only when the
-        row already existed does a second, explicit UPDATE statement run —
-        meaning the common case (a new record) costs exactly one
-        statement, same as before this change."""
-        cursor = self._conn.execute(
-            """
-            INSERT OR IGNORE INTO normalized_activities
-                (provider, external_id, start_time, duration_s, discipline, distance_m,
-                 avg_hr, max_hr, avg_power, max_power, calories,
-                 training_load, training_load_method, source_confidence)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                record["provider"], record["external_id"], record["start_time"], record["duration_s"],
-                record["discipline"], record["distance_m"], record["avg_hr"], record["max_hr"],
-                record["avg_power"], record["max_power"], record["calories"],
-                record["training_load"], record["training_load_method"], record["source_confidence"],
-            ),
-        )
-        if cursor.rowcount == 1:
-            return "inserted"
-
-        self._conn.execute(
-            """
-            UPDATE normalized_activities SET
-                start_time = ?, duration_s = ?, discipline = ?, distance_m = ?,
-                avg_hr = ?, max_hr = ?, avg_power = ?, max_power = ?, calories = ?,
-                training_load = ?, training_load_method = ?, source_confidence = ?
-            WHERE provider = ? AND external_id = ?
-            """,
-            (
-                record["start_time"], record["duration_s"], record["discipline"], record["distance_m"],
-                record["avg_hr"], record["max_hr"], record["avg_power"], record["max_power"],
-                record["calories"], record["training_load"], record["training_load_method"],
-                record["source_confidence"], record["provider"], record["external_id"],
-            ),
-        )
-        return "updated"
+        estimate. Delegates to the module-level upsert_normalized_activity()
+        (issue #36) so a one-off re-normalization pass
+        (trainiq.normalization.renormalize) can reuse the exact idempotent
+        persistence primitive instead of duplicating this SQL."""
+        return upsert_normalized_activity(self._conn, record)
 
     def _upsert_weigh_in(self, record: dict) -> str:
         """Returns "inserted" or "updated" — same real, non-estimated

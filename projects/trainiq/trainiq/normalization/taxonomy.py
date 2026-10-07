@@ -44,7 +44,9 @@ class Discipline(str, Enum):
 # exactly the kind of drift R-NORM-02/R-PELOTON-07 exist to catch, and a
 # version number makes it possible to reason about which mapping produced
 # a given historical record.
-MAPPING_VERSION = 1
+MAPPING_VERSION = 2  # 2026-10-06: register strava_unofficial (reuses
+                      # _STRAVA_MAP; adds explicit Walk->OTHER, closing the
+                      # same latent gap for official Strava) — issue #36
 
 _STRAVA_MAP: dict[str, Discipline] = {
     "Ride": Discipline.CYCLING,
@@ -59,6 +61,7 @@ _STRAVA_MAP: dict[str, Discipline] = {
     "Workout": Discipline.STRENGTH,
     "Crossfit": Discipline.STRENGTH,
     "Yoga": Discipline.YOGA,
+    "Walk": Discipline.OTHER,  # explicit, deliberate — not a warning-fallback (issue #36)
 }
 
 # Peloton's fitness_discipline values that a connector's semantic-drift
@@ -87,6 +90,11 @@ _PROVIDER_MAPS: dict[str, dict[str, Discipline]] = {
     # reconciliation. Both share the SAME _PELOTON_MAP object, not a
     # copy — no taxonomy duplication, no new discipline categories.
     "peloton_csv": _PELOTON_MAP,
+    # Issue #36: strava_unofficial's discipline_raw vocabulary is Strava's
+    # own display strings (activity_type_display_name/display_type), the
+    # same vocabulary official Strava's REST API uses — so it reuses
+    # _STRAVA_MAP directly, the same object, not a copy.
+    "strava_unofficial": _STRAVA_MAP,
 }
 
 

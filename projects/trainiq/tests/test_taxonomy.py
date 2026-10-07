@@ -35,6 +35,67 @@ def test_strava_yoga_maps_to_yoga():
     assert map_discipline("strava", "Yoga") == Discipline.YOGA
 
 
+def test_strava_walk_maps_to_other_explicitly_not_via_warning():
+    """Issue #36: Walk is a deliberate OTHER mapping, not a side effect of
+    the unrecognized-value warning path — a documented side effect of
+    reusing _STRAVA_MAP for strava_unofficial. loguru output isn't
+    captured by pytest's `caplog` (stdlib logging) — see
+    test_connector_declaring_no_incremental_support_logs_explanatory_note
+    in test_sync_engine.py for this codebase's actual working pattern,
+    used here too."""
+    import io
+
+    from loguru import logger
+
+    log_stream = io.StringIO()
+    handler_id = logger.add(log_stream, format="{message}")
+    try:
+        result = map_discipline("strava", "Walk")
+    finally:
+        logger.remove(handler_id)
+
+    assert result == Discipline.OTHER
+    assert "unrecognized" not in log_stream.getvalue()
+
+
+# --- strava_unofficial mappings (issue #36) --------------------------------
+
+def test_strava_unofficial_run_maps_to_running():
+    assert map_discipline("strava_unofficial", "Run") == Discipline.RUNNING
+
+
+def test_strava_unofficial_ride_maps_to_cycling():
+    assert map_discipline("strava_unofficial", "Ride") == Discipline.CYCLING
+
+
+def test_strava_unofficial_workout_maps_to_strength():
+    assert map_discipline("strava_unofficial", "Workout") == Discipline.STRENGTH
+
+
+def test_strava_unofficial_walk_maps_to_other_explicitly_not_via_warning():
+    """AC4: Walk is a known, deliberately-mapped key for strava_unofficial
+    too — this call must not log the "unrecognized discipline_raw" warning
+    (nor the "no discipline mapping defined for provider" one, which would
+    fire if strava_unofficial were still missing from _PROVIDER_MAPS),
+    since both the old (buggy) and new (fixed) behavior return
+    Discipline.OTHER and only the warning distinguishes them."""
+    import io
+
+    from loguru import logger
+
+    log_stream = io.StringIO()
+    handler_id = logger.add(log_stream, format="{message}")
+    try:
+        result = map_discipline("strava_unofficial", "Walk")
+    finally:
+        logger.remove(handler_id)
+
+    assert result == Discipline.OTHER
+    logged = log_stream.getvalue()
+    assert "unrecognized" not in logged
+    assert "no discipline mapping defined for provider" not in logged
+
+
 # --- Peloton mappings ----------------------------------------------------
 
 def test_peloton_cycling_maps_to_cycling():

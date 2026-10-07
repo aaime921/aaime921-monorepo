@@ -27,6 +27,7 @@ from trainiq.connectors.strava_unofficial import (
     StravaUnofficialHTTPError,
 )
 from trainiq.credentials.store import CredentialStore
+from trainiq.normalization.taxonomy import Discipline, map_discipline
 from trainiq.storage.schema import open_db
 from trainiq.sync.engine import AuthenticationError, TransientError
 
@@ -588,6 +589,64 @@ def test_normalize_no_start_time_candidate_present_raises_loudly(credential_stor
 
     with pytest.raises(StravaUnofficialHTTPError):
         connector.normalize(raw)
+
+
+# --- Issue #36: discipline mapping (end-to-end, connector + taxonomy together) --
+
+def test_mountain_bike_ride_normalizes_and_maps_to_cycling_end_to_end(credential_store):
+    """AC5: a raw payload with display_type="Mountain Bike Ride" must still
+    resolve to Discipline.CYCLING — not because the taxonomy map has a
+    "Mountain Bike Ride" key (it doesn't need one), but because normalize()
+    already prefers activity_type_display_name ("Ride") over display_type.
+    Exercised end-to-end (normalize() then map_discipline()), not as a
+    taxonomy-only unit test, since the whole point is that the map never
+    sees "Mountain Bike Ride" as input at all."""
+    fake = FakeStravaUnofficialSession()
+    connector = StravaUnofficialConnector(credential_store, session=fake)
+    raw = {
+        **_WEB_ACTIVITY_RECORD,
+        "display_type": "Mountain Bike Ride",
+        "activity_type_display_name": "Ride",
+    }
+
+    normalized = connector.normalize(raw)
+    discipline = map_discipline(PROVIDER, normalized["discipline_raw"])
+
+    assert normalized["discipline_raw"] == "Ride"
+    assert discipline == Discipline.CYCLING
+
+
+def test_run_normalizes_and_maps_to_running_end_to_end(credential_store):
+    fake = FakeStravaUnofficialSession()
+    connector = StravaUnofficialConnector(credential_store, session=fake)
+    raw = {**_WEB_ACTIVITY_RECORD, "display_type": "Run", "activity_type_display_name": "Run"}
+
+    normalized = connector.normalize(raw)
+    discipline = map_discipline(PROVIDER, normalized["discipline_raw"])
+
+    assert discipline == Discipline.RUNNING
+
+
+def test_walk_normalizes_and_maps_to_other_end_to_end(credential_store):
+    fake = FakeStravaUnofficialSession()
+    connector = StravaUnofficialConnector(credential_store, session=fake)
+    raw = {**_WEB_ACTIVITY_RECORD, "display_type": "Walk", "activity_type_display_name": "Walk"}
+
+    normalized = connector.normalize(raw)
+    discipline = map_discipline(PROVIDER, normalized["discipline_raw"])
+
+    assert discipline == Discipline.OTHER
+
+
+def test_workout_normalizes_and_maps_to_strength_end_to_end(credential_store):
+    fake = FakeStravaUnofficialSession()
+    connector = StravaUnofficialConnector(credential_store, session=fake)
+    raw = {**_WEB_ACTIVITY_RECORD, "display_type": "Workout", "activity_type_display_name": "Workout"}
+
+    normalized = connector.normalize(raw)
+    discipline = map_discipline(PROVIDER, normalized["discipline_raw"])
+
+    assert discipline == Discipline.STRENGTH
 
 
 # --- extract_resume_cursor() ----------------------------------------------------
