@@ -54,6 +54,11 @@ silently expanding this slice's approved scope into an unplanned
 migration. `_build_weigh_in_record()` does not call
 `compute_source_confidence()` at all right now, rather than compute a
 value with nowhere to go.
+**Related, not resolved by:** Issue #38 / ADR-039 (schema v4) added
+`is_flagged_implausible`, `plausibility_reason`, `bo_confirmed_valid`,
+`bo_confirmed_at` to `weigh_ins` — a different, already-approved migration
+for a different purpose (plausibility flagging, not confidence scoring).
+`source_confidence` remains unaddressed; don't assume v4 covers it.
 
 
 

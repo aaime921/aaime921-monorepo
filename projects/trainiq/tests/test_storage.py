@@ -139,7 +139,7 @@ def test_get_schema_version_on_nonexistent_db_reports_zero(tmp_path):
 def test_v3_migration_creates_athlete_profile_table(tmp_path):
     db_path = tmp_path / "trainiq.db"
     version = schema.migrate(db_path)
-    assert version == 3
+    assert version == schema.CURRENT_SCHEMA_VERSION
 
     conn = sqlite3.connect(db_path)
     columns = {row[1] for row in conn.execute("PRAGMA table_info(athlete_profile)")}
@@ -219,12 +219,30 @@ def test_v2_to_v3_migration_preserves_existing_data(tmp_path):
     athlete_profile must migrate cleanly without losing anything already
     stored, and a backup must exist afterward."""
     db_path = tmp_path / "trainiq.db"
-    schema.migrate(db_path)  # fresh install, already at v3
+    schema.migrate(db_path)  # fresh install, already at CURRENT_SCHEMA_VERSION
 
     # Simulate "was already at v2" by manually rolling schema_version back
-    # and dropping the table, then re-migrating.
+    # and undoing everything v3+ added, then re-migrating. weigh_ins must
+    # also be rolled back to its pre-v4 shape (ADR-039) — otherwise
+    # re-running the v4 migration script below would try to add columns
+    # that already exist.
     conn = sqlite3.connect(db_path)
     conn.execute("DROP TABLE athlete_profile")
+    conn.execute("DROP TABLE weigh_ins")
+    conn.execute(
+        """
+        CREATE TABLE weigh_ins (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            provider TEXT NOT NULL,
+            external_id TEXT NOT NULL,
+            timestamp TEXT NOT NULL,
+            weight_kg REAL,
+            body_fat_pct REAL,
+            muscle_mass_pct REAL,
+            UNIQUE(provider, external_id)
+        )
+        """
+    )
     conn.execute("UPDATE schema_version SET version = 2")
     conn.execute(
         "INSERT INTO credentials_metadata (provider, connected) VALUES ('strava', 1)"
@@ -234,7 +252,7 @@ def test_v2_to_v3_migration_preserves_existing_data(tmp_path):
 
     version = schema.migrate(db_path)
 
-    assert version == 3
+    assert version == schema.CURRENT_SCHEMA_VERSION
     conn = sqlite3.connect(db_path)
     preserved = conn.execute(
         "SELECT connected FROM credentials_metadata WHERE provider = 'strava'"
@@ -274,3 +292,99 @@ def test_v1_database_migrates_directly_to_current_version_in_one_call(tmp_path):
     assert "athlete_profile" in tables
     assert "state_entered_at" in connector_state_cols  # ADR-038's columns present
     assert preserved == (1,)  # data from the oldest version survived every intermediate step
+
+
+# --- ADR-039 / Issue #38: weigh-in plausibility flagging --------------------
+
+def test_v4_migration_adds_plausibility_columns_to_weigh_ins(tmp_path):
+    db_path = tmp_path / "trainiq.db"
+    version = schema.migrate(db_path)
+    assert version == schema.CURRENT_SCHEMA_VERSION
+
+    conn = sqlite3.connect(db_path)
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(weigh_ins)")}
+    conn.close()
+    assert {
+        "is_flagged_implausible", "plausibility_reason",
+        "bo_confirmed_valid", "bo_confirmed_at",
+    } <= columns
+
+
+def test_v4_migration_new_columns_default_to_unflagged_unconfirmed(tmp_path):
+    """Defaults matter here specifically because every pre-existing row
+    created before this migration must come through as 'not flagged, not
+    confirmed' — never NULL/true by accident — per AC8's requirement that
+    no pre-v4 assertion elsewhere in this suite is disturbed."""
+    db_path = tmp_path / "trainiq.db"
+    conn = sqlite3.connect(db_path)
+    conn.executescript(schema._MIGRATIONS[1])
+    conn.execute("UPDATE schema_version SET version = 1")
+    conn.execute(
+        "INSERT INTO weigh_ins (provider, external_id, timestamp, weight_kg) "
+        "VALUES ('eufy', 'w1', '2026-01-01T00:00:00Z', 85.0)"
+    )
+    conn.commit()
+    conn.close()
+
+    schema.migrate(db_path)
+
+    conn = sqlite3.connect(db_path)
+    row = conn.execute(
+        "SELECT is_flagged_implausible, bo_confirmed_valid, bo_confirmed_at "
+        "FROM weigh_ins WHERE external_id = 'w1'"
+    ).fetchone()
+    conn.close()
+    assert row == (0, 0, None)
+
+
+def test_v4_backfill_flags_exactly_the_issues_known_bad_rows(tmp_path):
+    """AC4's proof: fixture rows reproducing the issue's exact evidence
+    table (7 implausible readings interleaved, by timestamp, with normal
+    80-88.3 kg readings), inserted directly at schema v3. After migrate()
+    to v4, exactly those 7 rows must end up flagged and nothing else."""
+    db_path = tmp_path / "trainiq.db"
+    conn = sqlite3.connect(db_path)
+    conn.executescript(schema._MIGRATIONS[1])
+    conn.executescript(schema._MIGRATIONS[2])
+    conn.executescript(schema._MIGRATIONS[3])
+    conn.execute("UPDATE schema_version SET version = 3")
+
+    normal_readings = [
+        ("n1", "2025-01-01T08:00:00Z", 82.0, 18.0),
+        ("n2", "2025-03-01T08:00:00Z", 84.5, 17.5),
+        ("n3", "2025-05-01T08:00:00Z", 83.0, 18.2),
+        ("n4", "2025-09-14T18:50:00Z", 85.0, 17.0),
+        ("n5", "2026-07-05T10:00:00Z", 88.3, 16.0),
+        ("n6", "2026-07-06T18:00:00Z", 86.0, 17.8),
+        ("n7", "2026-09-05T19:00:00Z", 80.0, 19.0),
+    ]
+    bad_readings = [
+        ("bad1", "2025-09-14T18:52:00Z", 19.15, 0.0),
+        ("bad2", "2025-09-14T18:53:00Z", 19.15, 5.0),
+        ("bad3", "2025-09-20T09:00:00Z", 25.0, 0.0),
+        ("bad4", "2025-10-01T09:00:00Z", 30.0, 5.0),
+        ("bad5", "2026-07-05T10:53:00Z", 20.55, 0.0),
+        ("bad6", "2026-07-06T18:43:00Z", 20.7, 5.0),
+        ("bad7", "2026-09-05T19:30:00Z", 35.8, 0.0),
+    ]
+    for external_id, timestamp, weight_kg, body_fat_pct in normal_readings + bad_readings:
+        conn.execute(
+            "INSERT INTO weigh_ins (provider, external_id, timestamp, weight_kg, body_fat_pct) "
+            "VALUES ('eufy', ?, ?, ?, ?)",
+            (external_id, timestamp, weight_kg, body_fat_pct),
+        )
+    conn.commit()
+    conn.close()
+
+    version = schema.migrate(db_path)
+    assert version == schema.CURRENT_SCHEMA_VERSION
+
+    conn = sqlite3.connect(db_path)
+    flagged = {
+        row[0] for row in conn.execute(
+            "SELECT external_id FROM weigh_ins WHERE is_flagged_implausible = 1"
+        )
+    }
+    conn.close()
+
+    assert flagged == {eid for eid, *_ in bad_readings}

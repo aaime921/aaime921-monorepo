@@ -1119,3 +1119,174 @@ def textwrap_dedent_for_method(source: str) -> str:
     whitespace before parsing."""
     import textwrap
     return textwrap.dedent(source)
+
+
+# --- ADR-039 / Issue #38: weigh-in plausibility flagging, wired through the Sync Engine ---
+
+class MockWeighInConnector(Connector):
+    """A WEIGH_IN-kind connector returning whatever fixed list of raw
+    records it's constructed with, ignoring `since` entirely — mirrors
+    MockAlwaysReturnsAllConnector's role for ACTIVITY-kind tests, needed
+    here because Eufy's real supports_incremental_sync=False means every
+    sync reprocesses full history (BL-006), the exact scenario this
+    feature's order-independence guarantee (Task breakdown item 5) must
+    hold under."""
+
+    capability_tier = CapabilityTier.TIER_3_MULTI_STRATEGY
+    record_kind = RecordKind.WEIGH_IN
+    supports_incremental_sync = False
+
+    def __init__(self, provider: str, records: list[dict]):
+        super().__init__(provider)
+        self._records = records
+
+    def authenticate(self) -> bool:
+        return True
+
+    def download(self, since: str | None = None) -> list[dict]:
+        return list(self._records)
+
+    def normalize(self, raw: dict) -> dict:
+        return {
+            "external_id": raw["external_id"],
+            "timestamp": raw["timestamp"],
+            "weight_kg": raw.get("weight_kg"),
+            "body_fat_pct": raw.get("body_fat_pct"),
+        }
+
+    def extract_resume_cursor(self, normalized: dict) -> str | None:
+        value = normalized.get("timestamp")
+        return str(value) if value is not None else None
+
+
+def _baseline_weigh_ins(n: int, weight_kg: float = 85.0, prefix: str = "w") -> list[dict]:
+    return [
+        {
+            "external_id": f"{prefix}{i}",
+            "timestamp": f"2026-01-{i + 1:02d}T08:00:00+00:00",
+            "weight_kg": weight_kg,
+            "body_fat_pct": 18.0,
+        }
+        for i in range(n)
+    ]
+
+
+_OUTLIER_READING = {
+    "external_id": "outlier1",
+    "timestamp": "2026-01-10T08:00:00+00:00",
+    "weight_kg": 20.0,
+    "body_fat_pct": 5.0,
+}
+
+
+def test_weigh_in_sync_counts_flagged_implausible_records(db):
+    """Direct confirmation of the new ConnectorSyncResult counter —
+    reproducing the issue's own evidence shape (a low-weight, low-body-fat
+    outlier against an established baseline)."""
+    records = _baseline_weigh_ins(5) + [dict(_OUTLIER_READING)]
+    connector = MockWeighInConnector("testscale", records)
+    engine = SynchronizationEngine(db)
+
+    result = engine.run_once([connector])
+
+    r = result.connector_results[0]
+    assert r.records_flagged_implausible == 1
+    assert r.records_inserted == 6
+
+    flagged_row = db.execute(
+        "SELECT is_flagged_implausible, plausibility_reason FROM weigh_ins WHERE external_id = 'outlier1'"
+    ).fetchone()
+    assert flagged_row["is_flagged_implausible"] == 1
+    assert flagged_row["plausibility_reason"] is not None
+
+    normal_row = db.execute(
+        "SELECT is_flagged_implausible FROM weigh_ins WHERE external_id = 'w0'"
+    ).fetchone()
+    assert normal_row["is_flagged_implausible"] == 0
+
+
+def test_weigh_in_sync_summary_reports_flagged_count(db):
+    """The run summary must report the flagged count, following the
+    existing inserted/updated/malformed/skipped pattern (AC5)."""
+    import io
+    from loguru import logger
+
+    records = _baseline_weigh_ins(5) + [dict(_OUTLIER_READING)]
+    connector = MockWeighInConnector("testscale", records)
+
+    log_stream = io.StringIO()
+    handler_id = logger.add(log_stream, format="{message}")
+    try:
+        engine = SynchronizationEngine(db)
+        engine.run_once([connector])
+    finally:
+        logger.remove(handler_id)
+
+    assert "flagged 1 implausible" in log_stream.getvalue()
+
+
+def test_activity_sync_summary_always_reports_flagged_zero(db):
+    """ACTIVITY-kind connectors never flag anything, but the clause is
+    unconditional (unlike the BL-006 note) — "flagged 0 implausible" is
+    still printed."""
+    import io
+    from loguru import logger
+
+    log_stream = io.StringIO()
+    handler_id = logger.add(log_stream, format="{message}")
+    try:
+        engine = SynchronizationEngine(db)
+        connector = MockHealthyConnector("strava", _records(2))
+        engine.run_once([connector])
+    finally:
+        logger.remove(handler_id)
+
+    assert "flagged 0 implausible" in log_stream.getvalue()
+
+
+def test_resync_never_clears_bo_confirmed_valid_on_already_confirmed_row(db):
+    """ADR-039's auditability guarantee: once the BO has confirmed a
+    flagged reading as valid (via scripts/confirm_weigh_in.py), a later
+    resync re-evaluating the same row must re-derive the same
+    is_flagged_implausible/plausibility_reason verdict but must NEVER
+    touch bo_confirmed_valid/bo_confirmed_at — those columns are
+    BO-owned, and _upsert_weigh_in()'s UPDATE statement deliberately
+    excludes them."""
+    records = _baseline_weigh_ins(5) + [dict(_OUTLIER_READING)]
+    connector_1 = MockWeighInConnector("testscale", records)
+    engine = SynchronizationEngine(db)
+    engine.run_once([connector_1])
+
+    confirmed_at = "2026-02-01T00:00:00+00:00"
+    db.execute(
+        "UPDATE weigh_ins SET bo_confirmed_valid = 1, bo_confirmed_at = ? WHERE external_id = 'outlier1'",
+        (confirmed_at,),
+    )
+    db.commit()
+
+    # Resync the exact same data — Eufy-style full-history reprocessing
+    # (supports_incremental_sync = False) means this is the realistic case.
+    connector_2 = MockWeighInConnector("testscale", records)
+    engine.run_once([connector_2])
+
+    row = db.execute(
+        "SELECT is_flagged_implausible, bo_confirmed_valid, bo_confirmed_at "
+        "FROM weigh_ins WHERE external_id = 'outlier1'"
+    ).fetchone()
+    assert row["is_flagged_implausible"] == 1  # the rule's own verdict is re-derived, unchanged
+    assert row["bo_confirmed_valid"] == 1  # BO's confirmation survived the resync
+    assert row["bo_confirmed_at"] == confirmed_at
+
+
+def test_recent_weights_before_excludes_flagged_unconfirmed_readings(db):
+    """_recent_weights_before() must not let a still-flagged, unconfirmed
+    outlier poison the rolling baseline for subsequent readings."""
+    records = _baseline_weigh_ins(5) + [dict(_OUTLIER_READING)]
+    connector = MockWeighInConnector("testscale", records)
+    engine = SynchronizationEngine(db)
+    engine.run_once([connector])
+
+    recent = engine._recent_weights_before("2026-01-11T00:00:00+00:00", 5)
+
+    assert 20.0 not in recent  # the flagged outlier must not appear in the window
+    assert all(w == 85.0 for w in recent)

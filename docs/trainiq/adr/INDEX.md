@@ -60,6 +60,7 @@
 |---|---|---|
 | [037](ADR-037-provider-directed-retry-policy.md) | Provider Directed Retry Policy | Epic 1 self-review (Strava) |
 | [038](ADR-038-connector-lifecycle-policy.md) | Connector Lifecycle Policy | Epic 3 (Peloton), revised twice before implementation |
+| [039](ADR-039-weigh-in-plausibility-flagging.md) | Weigh-In Plausibility Flagging | Issue #38 (Eufy implausible weigh-ins) |
 
 ---
 

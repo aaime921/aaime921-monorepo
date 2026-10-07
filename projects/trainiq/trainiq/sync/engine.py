@@ -54,6 +54,7 @@ from trainiq.athlete.profile import AthleteProfile
 from trainiq.connectors.base import Connector, ConnectorState, RecordKind
 from trainiq.logging_setup import diagnostic_logger, summary_logger
 from trainiq.normalization.engine import build_canonical_record
+from trainiq.normalization.plausibility import DEFAULT_ROLLING_WINDOW_SIZE
 from trainiq.sync.lifecycle_policy import LifecycleDecision, LifecycleState, evaluate
 
 
@@ -96,6 +97,11 @@ class ConnectorSyncResult:
     records_updated: int = 0
     records_malformed: int = 0
     records_skipped: int = 0
+    # ADR-039 / Issue #38: additive field, appended at the end per the
+    # RC1-HF-006 precedent — never reorder/rename existing fields. Counts
+    # WEIGH_IN records this run's plausibility check flagged; always 0 for
+    # ACTIVITY-kind connectors.
+    records_flagged_implausible: int = 0
 
 
 @dataclass
@@ -255,27 +261,57 @@ class SynchronizationEngine:
 
     def _upsert_weigh_in(self, record: dict) -> str:
         """Returns "inserted" or "updated" — same real, non-estimated
-        pattern as _upsert_normalized_activity above, for the same reason."""
+        pattern as _upsert_normalized_activity above, for the same reason.
+
+        ADR-039 / Issue #38: column lists extended with
+        is_flagged_implausible/plausibility_reason only. Deliberately
+        NEVER bo_confirmed_valid/bo_confirmed_at — those are BO-owned, so a
+        resync must never silently revert a BO confirmation."""
         cursor = self._conn.execute(
-            "INSERT OR IGNORE INTO weigh_ins (provider, external_id, timestamp, weight_kg, body_fat_pct, muscle_mass_pct) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT OR IGNORE INTO weigh_ins "
+            "(provider, external_id, timestamp, weight_kg, body_fat_pct, muscle_mass_pct, "
+            " is_flagged_implausible, plausibility_reason) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 record["provider"], record["external_id"], record["timestamp"],
                 record["weight_kg"], record["body_fat_pct"], record["muscle_mass_pct"],
+                record["is_flagged_implausible"], record["plausibility_reason"],
             ),
         )
         if cursor.rowcount == 1:
             return "inserted"
 
         self._conn.execute(
-            "UPDATE weigh_ins SET timestamp = ?, weight_kg = ?, body_fat_pct = ?, muscle_mass_pct = ? "
+            "UPDATE weigh_ins SET timestamp = ?, weight_kg = ?, body_fat_pct = ?, muscle_mass_pct = ?, "
+            "is_flagged_implausible = ?, plausibility_reason = ? "
             "WHERE provider = ? AND external_id = ?",
             (
                 record["timestamp"], record["weight_kg"], record["body_fat_pct"], record["muscle_mass_pct"],
+                record["is_flagged_implausible"], record["plausibility_reason"],
                 record["provider"], record["external_id"],
             ),
         )
         return "updated"
+
+    def _recent_weights_before(self, timestamp: str, limit: int) -> list[float]:
+        """ADR-039 / Issue #38: the athlete's prior unflagged (or
+        BO-confirmed-valid) weigh-ins strictly before `timestamp`, newest
+        first, limited to `limit` — exactly what
+        evaluate_weigh_in_plausibility() expects as its rolling window.
+
+        Deliberately NOT filtered by provider — the rolling median is of
+        the athlete's weight, not of a single device's readings, per the
+        requirements ("relative to the individual athlete"). If a second
+        weigh-in provider is ever added, its readings feed and are checked
+        against the same shared baseline."""
+        rows = self._conn.execute(
+            "SELECT weight_kg FROM weigh_ins "
+            "WHERE weight_kg IS NOT NULL AND timestamp < ? "
+            "AND (is_flagged_implausible = 0 OR bo_confirmed_valid = 1) "
+            "ORDER BY timestamp DESC LIMIT ?",
+            (timestamp, limit),
+        ).fetchall()
+        return [r[0] for r in rows]
 
     def _persist_canonical_record(self, connector: Connector, record: dict) -> str:
         """Routes purely by `connector.record_kind` — never by inspecting
@@ -457,9 +493,27 @@ class SynchronizationEngine:
             updated_count = 0
             skipped_malformed = 0
             skipped_no_external_id = 0
+            flagged_implausible_count = 0
             resume_cursor = since
-            for raw in raw_records:
-                normalized = connector.normalize(raw)
+
+            # ADR-039 / Issue #38, Task breakdown item 5: Eufy's
+            # supports_incremental_sync=False means every sync reprocesses
+            # full history (BL-006), and download()'s return order isn't
+            # guaranteed chronological. For WEIGH_IN connectors, pre-
+            # normalize and sort by timestamp ascending so
+            # _recent_weights_before()'s DB lookups below are evaluated in
+            # the same chronological order the one-time backfill used —
+            # otherwise a sync's flagging results could depend on download
+            # order rather than solely on the data. Not needed for
+            # ACTIVITY connectors, so left unchanged there.
+            if connector.record_kind == RecordKind.WEIGH_IN:
+                pairs = [(raw, connector.normalize(raw)) for raw in raw_records]
+                pairs.sort(key=lambda pair: pair[1].get("timestamp") or "")
+            else:
+                pairs = [(raw, None) for raw in raw_records]
+
+            for raw, pre_normalized in pairs:
+                normalized = pre_normalized if pre_normalized is not None else connector.normalize(raw)
                 external_id = normalized.get("external_id") or raw.get("external_id")
                 if external_id is None:
                     skipped_no_external_id += 1
@@ -489,8 +543,18 @@ class SynchronizationEngine:
                 # canonical normalization fails — only the canonical
                 # record is skipped, logged, never silently dropped.
                 try:
+                    recent_weights_kg: tuple[float, ...] = ()
+                    if connector.record_kind == RecordKind.WEIGH_IN:
+                        # ADR-039 / Issue #38: committed-history lookup, not
+                        # in-memory batch state — later rows in this same
+                        # run see earlier rows' upserts via this connection
+                        # (same transaction, not yet committed but visible
+                        # to it), matching the one-time backfill's semantics.
+                        recent_weights_kg = tuple(
+                            self._recent_weights_before(normalized["timestamp"], DEFAULT_ROLLING_WINDOW_SIZE)
+                        )
                     canonical_record = build_canonical_record(
-                        provider, connector.record_kind, normalized, self._athlete_profile
+                        provider, connector.record_kind, normalized, self._athlete_profile, recent_weights_kg
                     )
                 except (KeyError, TypeError, ValueError) as exc:
                     skipped_malformed += 1
@@ -505,6 +569,8 @@ class SynchronizationEngine:
                         inserted_count += 1
                     else:
                         updated_count += 1
+                    if canonical_record.get("is_flagged_implausible"):
+                        flagged_implausible_count += 1
 
                 # Connector-owned per the ADR-013 refinement (Epic 2) — the
                 # Sync Engine never inspects `normalized`'s field names
@@ -544,10 +610,15 @@ class SynchronizationEngine:
             # malformed and skipped. Every number below is real, counted
             # during this exact run — none are estimated or derived after
             # the fact.
+            # ADR-039 / Issue #38: always appended (not conditional like
+            # the BL-006 clause below) — "flagged 0 implausible" is
+            # informative for every connector, including ACTIVITY-kind
+            # ones where it will always read 0.
             summary_logger().info(
                 f"{provider}: downloaded {len(raw_records)}, "
                 f"inserted {inserted_count}, updated {updated_count}, "
-                f"malformed {skipped_malformed}, skipped {skipped_no_external_id}"
+                f"malformed {skipped_malformed}, skipped {skipped_no_external_id}, "
+                f"flagged {flagged_implausible_count} implausible"
             )
             if not connector.supports_incremental_sync:
                 # BL-006 (Eufy, currently the only connector this applies
@@ -564,6 +635,7 @@ class SynchronizationEngine:
                 records_upserted=count, duration_s=time.monotonic() - start,
                 records_inserted=inserted_count, records_updated=updated_count,
                 records_malformed=skipped_malformed, records_skipped=skipped_no_external_id,
+                records_flagged_implausible=flagged_implausible_count,
             )
 
         except AuthenticationError as exc:

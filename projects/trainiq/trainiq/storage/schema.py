@@ -23,7 +23,9 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
-CURRENT_SCHEMA_VERSION = 3
+from trainiq.storage.backfill import backfill_weigh_in_plausibility
+
+CURRENT_SCHEMA_VERSION = 4
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -141,6 +143,17 @@ _MIGRATIONS: dict[int, str] = {
             ftp_watts INTEGER
         );
     """,
+    # ADR-039 / Issue #38: weigh-in plausibility flagging.
+    # is_flagged_implausible/plausibility_reason are the rule's own verdict,
+    # overwritten on every re-evaluation (e.g. a full Eufy resync, BL-006).
+    # bo_confirmed_valid/bo_confirmed_at are BO-owned — sync code must never
+    # write them (see sync/engine.py's _upsert_weigh_in column list).
+    4: """
+        ALTER TABLE weigh_ins ADD COLUMN is_flagged_implausible INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE weigh_ins ADD COLUMN plausibility_reason TEXT;
+        ALTER TABLE weigh_ins ADD COLUMN bo_confirmed_valid INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE weigh_ins ADD COLUMN bo_confirmed_at TEXT;
+    """,
 }
 
 
@@ -195,6 +208,8 @@ def migrate(db_path: Path) -> int:
             if script is None:
                 raise RuntimeError(f"No migration defined for version {version}")
             conn.executescript(script)
+            if version == 4:
+                backfill_weigh_in_plausibility(conn)
             conn.execute("UPDATE schema_version SET version = ?", (version,))
             conn.commit()
         return get_schema_version(conn)
