@@ -169,6 +169,43 @@ def upsert_normalized_activity(conn: sqlite3.Connection, record: dict) -> str:
     return "updated"
 
 
+def recompute_checkpoint_from_normalized(
+    conn: sqlite3.Connection, provider: str, strategy: str = "default"
+) -> Optional[str]:
+    """Sets sync_checkpoints.last_cursor for (provider, strategy) to
+    MAX(normalized_activities.start_time) for that provider, bypassing
+    extract_resume_cursor()/a live connector entirely — a direct
+    re-derivation from already-corrected data, for use after a
+    renormalization pass changes historical start_time values out from
+    under an already-persisted checkpoint (issue #43). Returns the new
+    cursor value, or None if the provider has no normalized_activities
+    rows at all (a valid, reportable state, not an error). Does not
+    commit — caller owns the transaction boundary, matching every other
+    function in this module and in trainiq.normalization.renormalize.
+
+    Deliberately leaves last_success_at untouched: this is a data
+    repair, not evidence that a sync actually ran against this provider
+    just now."""
+    row = conn.execute(
+        "SELECT MAX(start_time) AS max_start_time FROM normalized_activities WHERE provider = ?",
+        (provider,),
+    ).fetchone()
+    max_start_time = row["max_start_time"] if row else None
+    if max_start_time is None:
+        return None
+
+    conn.execute(
+        """
+        INSERT INTO sync_checkpoints (provider, strategy, last_cursor)
+        VALUES (?, ?, ?)
+        ON CONFLICT(provider, strategy) DO UPDATE SET
+            last_cursor = excluded.last_cursor
+        """,
+        (provider, strategy, max_start_time),
+    )
+    return max_start_time
+
+
 def _derive_next_eligible_retry(
     state: ConnectorState, last_attempt_at: datetime, attempt_count_in_state: int
 ) -> Optional[datetime]:

@@ -43,7 +43,9 @@ docs/trainiq/architecture/30-strava-unofficial-web-endpoints.md.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from trainiq.connectors.base import AcquisitionStrategy, CapabilityTier, Connector
 from trainiq.credentials.store import CredentialStore
@@ -86,19 +88,19 @@ WEB_ENDPOINT_HEADERS = {
     ),
 }
 
-# Candidate field names for each *_raw value, tried in order, per item.
-# The BO's issue body lists "start_time/date fields" without pinning an
-# exact key — the only name in this connector's new surface the evidence
-# doesn't nail down (every other field — distance_raw, moving_time_raw,
-# elapsed_time_raw, elevation_gain_raw, id, name, display_type,
-# activity_type_display_name, commute, private, has_latlng, description —
-# is given verbatim in the issue body). Per the Evidence-based principle,
-# this is not guessed as a single hardcoded key: the Developer tries these
-# in order and takes the first present, so a wrong guess fails loudly
+# Candidate start-time fields, tried in order, per item. `start_time` is an
+# ISO 8601 string carrying its own correct UTC offset and is always present
+# in evidence seen so far — it is the only candidate that doesn't need a
+# timezone guess. `start_date_local_raw` is the athlete's *local* wall-clock
+# time as a bare epoch (issue #43) — never a UTC epoch, despite the name's
+# similarity to the other `*_raw` fields — so it is demoted to a fallback
+# that requires an explicit local-timezone conversion (see
+# `_convert_local_epoch_to_utc`). `start_date_raw`/`start_date`/`start_day`
+# remain untouched, unevidenced fallbacks: a wrong guess there fails loudly
 # instead of silently mis-normalizing every activity's start_time (which
 # would also corrupt the incremental checkpoint, since
 # extract_resume_cursor() keys off start_time).
-_START_FIELD_CANDIDATES = ("start_date_local_raw", "start_date_raw", "start_date", "start_day")
+_START_FIELD_CANDIDATES = ("start_time", "start_date_local_raw", "start_date_raw", "start_date", "start_day")
 
 
 class StravaUnofficialHTTPError(Exception):
@@ -114,6 +116,7 @@ class StravaUnofficialConnector(Connector):
         credential_store: CredentialStore,
         session: Any = None,
         base_url: str = DEFAULT_BASE_URL,
+        local_timezone: str | None = None,
     ):
         super().__init__(PROVIDER)
         self._credentials = credential_store
@@ -122,6 +125,13 @@ class StravaUnofficialConnector(Connector):
         # this sandbox cannot reach api.strava.com.
         self._session = session if session is not None else _RequestsSession()
         self._active_cookie: str | None = None
+        # IANA zone name used only by the start_date_local_raw fallback
+        # (issue #43). The caller (composition root / scripts) resolves
+        # this from config.json; if not supplied, fall back to the
+        # system timezone — cheap, no network call, never raises.
+        self._local_timezone = (
+            local_timezone if local_timezone is not None else _detect_system_timezone()
+        )
 
     def list_acquisition_strategies(self) -> list[AcquisitionStrategy]:
         return [AcquisitionStrategy.UNOFFICIAL_SESSION]
@@ -277,7 +287,9 @@ class StravaUnofficialConnector(Connector):
                 stopped_early = False
                 for item in batch:
                     item_epoch = int(
-                        datetime.fromisoformat(_extract_start_time_iso(item)).timestamp()
+                        datetime.fromisoformat(
+                            _extract_start_time_iso(item, self._local_timezone)
+                        ).timestamp()
                     )
                     if item_epoch <= since_epoch:
                         stopped_early = True
@@ -307,7 +319,7 @@ class StravaUnofficialConnector(Connector):
         return {
             "provider": PROVIDER,
             "external_id": str(raw["id"]),
-            "start_time": _extract_start_time_iso(raw),
+            "start_time": _extract_start_time_iso(raw, self._local_timezone),
             "duration_s": raw["elapsed_time_raw"],
             "discipline_raw": raw.get("activity_type_display_name") or raw.get("display_type"),
             # Per requirements AC4 / open question 2: no HR, power, or
@@ -324,23 +336,82 @@ class StravaUnofficialConnector(Connector):
         }
 
 
-def _extract_start_time_iso(raw: dict[str, Any]) -> str:
+def _extract_start_time_iso(raw: dict[str, Any], local_timezone: str | None) -> str:
     for key in _START_FIELD_CANDIDATES:
-        if key in raw and raw[key] is not None:
-            value = raw[key]
-            if key.endswith("_raw") and isinstance(value, (int, float)):
-                # Assumed Unix epoch seconds, consistent with the other
-                # *_raw fields being machine/numeric values rather than
-                # display strings. Timezone of "local_raw" is unconfirmed
-                # (local vs. UTC) — see architecture doc Risks/tradeoffs.
-                return datetime.fromtimestamp(value, tz=timezone.utc).isoformat()
-            return str(value)  # assume already a parseable date/ISO string
+        if key not in raw or raw[key] is None:
+            continue
+        value = raw[key]
+        if key == "start_time":
+            return _parse_offset_aware_start_time(value)
+        if key == "start_date_local_raw" and isinstance(value, (int, float)):
+            return _convert_local_epoch_to_utc(value, local_timezone)
+        if key.endswith("_raw") and isinstance(value, (int, float)):
+            # start_date_raw: a genuine UTC epoch (issue #30's evidence) —
+            # unlike start_date_local_raw, this one really is UTC.
+            return datetime.fromtimestamp(value, tz=timezone.utc).isoformat()
+        return str(value)  # assume already a parseable date/ISO string
     raise StravaUnofficialHTTPError(
         f"{PROVIDER}: no recognized start-time field in training_activities "
         f"item (tried {_START_FIELD_CANDIDATES}) — payload shape has "
         f"changed since issue #30's evidence; Developer/BO must re-capture "
         f"a live sample and update _START_FIELD_CANDIDATES"
     )
+
+
+def _parse_offset_aware_start_time(value: Any) -> str:
+    """Parses `start_time` (e.g. "2026-10-07T18:57:34+0000") with its own
+    offset and converts to UTC — never assumes the value is already UTC
+    (issue #43's root cause, applied to a different field)."""
+    parsed = datetime.fromisoformat(str(value))
+    if parsed.tzinfo is None:
+        raise StravaUnofficialHTTPError(
+            f"{PROVIDER}: 'start_time' field {value!r} has no UTC offset — "
+            f"refusing to assume it is already UTC"
+        )
+    return parsed.astimezone(timezone.utc).isoformat()
+
+
+def _convert_local_epoch_to_utc(value: float, local_timezone: str | None) -> str:
+    """Converts `start_date_local_raw` — an epoch whose wall-clock digits
+    are the athlete's LOCAL time, not UTC (issue #43) — to the correct UTC
+    instant. Strips the (wrong) UTC label the epoch's digits were read
+    with, re-labels with the resolved local zone, then converts to UTC."""
+    if local_timezone is None:
+        raise StravaUnofficialHTTPError(
+            f"{PROVIDER}: 'start_date_local_raw' fallback requires a known "
+            f"local timezone, but none is configured and none could be "
+            f"detected from the system — refusing to guess"
+        )
+    naive_wallclock = datetime.fromtimestamp(value, tz=timezone.utc).replace(tzinfo=None)
+    try:
+        aware_local = naive_wallclock.replace(tzinfo=ZoneInfo(local_timezone))
+    except ZoneInfoNotFoundError as exc:
+        raise StravaUnofficialHTTPError(
+            f"{PROVIDER}: configured local timezone {local_timezone!r} is "
+            f"not a recognized IANA zone"
+        ) from exc
+    return aware_local.astimezone(timezone.utc).isoformat()
+
+
+def _detect_system_timezone(localtime_path: Path = Path("/etc/localtime")) -> str | None:
+    """Best-effort IANA zone name from /etc/localtime's symlink target
+    (macOS convention — TrainIQ's only supported platform). Returns None
+    if undeterminable (not a symlink, or the target isn't under a
+    `zoneinfo` directory) — callers must never substitute a fixed zone for
+    None; `localtime_path` is injectable for tests."""
+    try:
+        if not localtime_path.is_symlink():
+            return None
+        target = localtime_path.resolve()
+    except OSError:
+        return None
+    parts = target.parts
+    if "zoneinfo" not in parts:
+        return None
+    zone_parts = parts[parts.index("zoneinfo") + 1 :]
+    if not zone_parts:
+        return None
+    return "/".join(zone_parts)
 
 
 def _parse_retry_after(response: Any) -> float | None:

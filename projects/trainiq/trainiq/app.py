@@ -42,7 +42,7 @@ import sys
 from pathlib import Path
 
 from trainiq.athlete.store import load_athlete_profile
-from trainiq.config import get_eufy_device_id
+from trainiq.config import get_athlete_timezone, get_eufy_device_id
 from trainiq.connectors.base import Connector
 from trainiq.connectors.eufy import EufyConnector
 from trainiq.connectors.peloton import PelotonConnector
@@ -118,7 +118,10 @@ def _build_configured_connectors(
     # --- Strava (unofficial, session-cookie) ---
     try:
         if credential_store.get(STRAVA_UNOFFICIAL_PROVIDER, STRAVA_UNOFFICIAL_CRED_SESSION_COOKIE):
-            connectors.append(StravaUnofficialConnector(credential_store))
+            athlete_timezone = get_athlete_timezone(config_path)
+            connectors.append(
+                StravaUnofficialConnector(credential_store, local_timezone=athlete_timezone)
+            )
             report.info("Strava (unofficial): configured")
         else:
             report.info("Strava (unofficial): skipped (not connected)")

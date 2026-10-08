@@ -29,6 +29,7 @@ from trainiq.sync.engine import (
     AuthenticationError,
     SynchronizationEngine,
     TransientError,
+    recompute_checkpoint_from_normalized,
 )
 
 
@@ -1110,6 +1111,54 @@ def test_sync_engine_source_contains_no_hardcoded_provider_names_for_this_featur
             assert "eufy" not in node.value.lower(), (
                 f"Found a hardcoded provider-name string literal: {node.value!r}"
             )
+
+
+# --- recompute_checkpoint_from_normalized() (AC6, issue #43) -------------------
+
+def test_recompute_checkpoint_from_normalized_sets_cursor_to_max_start_time(db):
+    engine = SynchronizationEngine(db)
+    engine.run_once([MockHealthyConnector("strava_unofficial", _records(3))])
+
+    new_cursor = recompute_checkpoint_from_normalized(db, "strava_unofficial")
+    db.commit()
+
+    assert new_cursor == "2026-01-03T07:00:00+00:00"
+    assert engine.get_checkpoint("strava_unofficial") == "2026-01-03T07:00:00+00:00"
+
+
+def test_recompute_checkpoint_from_normalized_lowers_an_existing_too_high_cursor(db):
+    """AC6's exact scenario: a stale cursor computed under the old (wrong)
+    start_time logic can sit ABOVE the corrected max — recomputation must
+    lower it, not just raise an already-low one."""
+    engine = SynchronizationEngine(db)
+    engine.run_once([MockHealthyConnector("strava_unofficial", _records(3))])
+    db.execute(
+        "UPDATE sync_checkpoints SET last_cursor = ? WHERE provider = ? AND strategy = 'default'",
+        ("2099-01-01T00:00:00+00:00", "strava_unofficial"),
+    )
+    db.commit()
+
+    new_cursor = recompute_checkpoint_from_normalized(db, "strava_unofficial")
+    db.commit()
+
+    assert new_cursor == "2026-01-03T07:00:00+00:00"
+    assert engine.get_checkpoint("strava_unofficial") == "2026-01-03T07:00:00+00:00"
+
+
+def test_recompute_checkpoint_from_normalized_returns_none_for_provider_with_no_rows(db):
+    assert recompute_checkpoint_from_normalized(db, "strava_unofficial") is None
+
+
+def test_recompute_checkpoint_from_normalized_does_not_commit(db):
+    """Caller owns the transaction boundary — same precedent as
+    upsert_normalized_activity() and renormalize_provider()."""
+    engine = SynchronizationEngine(db)
+    engine.run_once([MockHealthyConnector("strava_unofficial", _records(1))])
+
+    recompute_checkpoint_from_normalized(db, "strava_unofficial", strategy="never-committed")
+    db.rollback()
+
+    assert engine.get_checkpoint("strava_unofficial", strategy="never-committed") is None
 
 
 def textwrap_dedent_for_method(source: str) -> str:
