@@ -33,6 +33,10 @@ Today this is a no-op for training_load (resolves to None/"unknown"
 regardless of discipline, since no AthleteProfile persistence exists yet)
 — but if that changes before you run this script, re-normalizing will also
 assign real training_load values to these rows for the first time.
+
+Note on logging (issue #44): main() now calls trainiq.logging_setup.configure()
+first, exactly like trainiq/app.py does, so loguru's default stderr handler
+is removed and per-record diagnostic logging doesn't flood the console.
 """
 
 from __future__ import annotations
@@ -44,6 +48,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from trainiq.connectors.strava_unofficial import PROVIDER, StravaUnofficialConnector
 from trainiq.credentials.store import CredentialStore
+from trainiq.logging_setup import DEFAULT_LOG_DIR, configure
 from trainiq.normalization.renormalize import renormalize_provider
 from trainiq.storage.schema import open_db
 
@@ -52,6 +57,8 @@ DEFAULT_DB_PATH = APP_SUPPORT_DIR / "trainiq.db"
 
 
 def main() -> int:
+    configure(DEFAULT_LOG_DIR)
+
     import argparse
 
     parser = argparse.ArgumentParser(

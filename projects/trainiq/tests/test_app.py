@@ -455,6 +455,75 @@ def test_main_prints_console_summary_of_connector_status_and_sync_results(isolat
     assert str(log_dir / "diagnostic.log") in captured.out
 
 
+def test_main_prints_flagged_count_in_console_summary(isolated_app_dirs, monkeypatch, capsys):
+    """Issue #44 AC2/AC4: the terminal summary line for a connector with
+    flagged records must include `flagged N implausible`, matching what
+    summary.log already receives from the Sync Engine — previously the
+    console line was rebuilt in trainiq/app.py without this clause."""
+    import trainiq.app as app_module
+    from trainiq.connectors.base import ConnectorState, RecordKind
+    from tests.test_sync_engine import _OUTLIER_READING, _baseline_weigh_ins
+
+    records = _baseline_weigh_ins(5) + [dict(_OUTLIER_READING)]
+
+    class _FakeEufyWeighInConnector:
+        record_kind = RecordKind.WEIGH_IN
+        supports_incremental_sync = False
+
+        def __init__(self, credential_store, device_id=None):
+            self.provider = "eufy"
+
+        def authenticate(self):
+            return True
+
+        def download(self, since=None):
+            return list(records)
+
+        def normalize(self, raw):
+            return {
+                "external_id": raw["external_id"],
+                "timestamp": raw["timestamp"],
+                "weight_kg": raw.get("weight_kg"),
+                "body_fat_pct": raw.get("body_fat_pct"),
+            }
+
+        def extract_resume_cursor(self, normalized):
+            value = normalized.get("timestamp")
+            return str(value) if value is not None else None
+
+        def get_state(self):
+            return ConnectorState.HEALTHY
+
+        def restore_state(self, state):
+            pass
+
+        def transition_state(self, to_state, detail=None):
+            pass
+
+        def active_strategy(self):
+            return None
+
+    monkeypatch.setattr(app_module, "EufyConnector", _FakeEufyWeighInConnector)
+
+    app_support, log_dir, cfg_path = isolated_app_dirs
+    app_support.mkdir(parents=True, exist_ok=True)
+    db_path = app_support / "trainiq.db"
+
+    from trainiq.storage.schema import open_db as _open_db
+    conn = _open_db(db_path)
+    store = CredentialStore(conn=conn)
+    store.set("eufy", "email", "test@example.com")
+    store.set("eufy", "password", "secret")
+    conn.close()
+    set_eufy_device_id(cfg_path, "device-123")
+
+    exit_code = app_module.main(argv=[])
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "flagged 1 implausible" in captured.out
+
+
 # --- --configure flag --------------------------------------------------------
 
 def test_main_configure_flag_with_zero_connectors_runs_configure_not_first_time_wizard(isolated_app_dirs, monkeypatch):

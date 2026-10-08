@@ -102,6 +102,11 @@ class ConnectorSyncResult:
     # WEIGH_IN records this run's plausibility check flagged; always 0 for
     # ACTIVITY-kind connectors.
     records_flagged_implausible: int = 0
+    # Issue #44: the exact text already logged via summary_logger() on the
+    # success path, handed back so callers (trainiq/app.py) can echo it to
+    # the console without rebuilding or re-logging it. None on the
+    # error/skipped_reason branches, which build their own separate text.
+    summary_line: Optional[str] = None
 
 
 @dataclass
@@ -614,12 +619,13 @@ class SynchronizationEngine:
             # the BL-006 clause below) — "flagged 0 implausible" is
             # informative for every connector, including ACTIVITY-kind
             # ones where it will always read 0.
-            summary_logger().info(
+            summary_line = (
                 f"{provider}: downloaded {len(raw_records)}, "
                 f"inserted {inserted_count}, updated {updated_count}, "
                 f"malformed {skipped_malformed}, skipped {skipped_no_external_id}, "
                 f"flagged {flagged_implausible_count} implausible"
             )
+            summary_logger().info(summary_line)
             if not connector.supports_incremental_sync:
                 # BL-006 (Eufy, currently the only connector this applies
                 # to): stated as a generic fact the Sync Engine reads from
@@ -636,6 +642,7 @@ class SynchronizationEngine:
                 records_inserted=inserted_count, records_updated=updated_count,
                 records_malformed=skipped_malformed, records_skipped=skipped_no_external_id,
                 records_flagged_implausible=flagged_implausible_count,
+                summary_line=summary_line,
             )
 
         except AuthenticationError as exc:

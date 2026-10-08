@@ -1244,6 +1244,52 @@ def test_activity_sync_summary_always_reports_flagged_zero(db):
     assert "flagged 0 implausible" in log_stream.getvalue()
 
 
+def test_connector_summary_written_to_summary_log_exactly_once(db, tmp_path):
+    """Issue #44 AC3/AC5: each connector's summary line must be written to
+    summary.log exactly once per run — previously both the Sync Engine and
+    trainiq/app.py's _log_sync_summary() logged their own copy, producing a
+    duplicate. This exercises the real file sink (not an in-memory loguru
+    capture) so it actually catches a regression where the line is logged
+    twice to the same file."""
+    from trainiq import logging_setup
+
+    log_dir = tmp_path / "logs"
+    logging_setup.configure(log_dir)
+    try:
+        connector = MockHealthyConnector("strava", _records(2))
+        engine = SynchronizationEngine(db)
+        engine.run_once([connector])
+    finally:
+        from loguru import logger
+        logger.remove()
+
+    summary_text = (log_dir / "summary.log").read_text()
+    assert summary_text.count("strava: downloaded") == 1
+
+
+def test_connector_sync_result_carries_summary_line_matching_logged_text(db):
+    """The exact string ConnectorSyncResult.summary_line carries must match
+    what was actually logged via summary_logger() — trainiq/app.py relies on
+    this to echo the same text to the console without re-logging it."""
+    import io
+    from loguru import logger
+
+    connector = MockHealthyConnector("strava", _records(2))
+
+    log_stream = io.StringIO()
+    handler_id = logger.add(log_stream, format="{message}")
+    try:
+        engine = SynchronizationEngine(db)
+        result = engine.run_once([connector])
+    finally:
+        logger.remove(handler_id)
+
+    r = result.connector_results[0]
+    assert r.summary_line is not None
+    assert r.summary_line in log_stream.getvalue()
+    assert "flagged 0 implausible" in r.summary_line
+
+
 def test_resync_never_clears_bo_confirmed_valid_on_already_confirmed_row(db):
     """ADR-039's auditability guarantee: once the BO has confirmed a
     flagged reading as valid (via scripts/confirm_weigh_in.py), a later

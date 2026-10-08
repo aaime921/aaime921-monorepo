@@ -13,6 +13,8 @@ from loguru import logger
 
 _configured = False
 
+DEFAULT_LOG_DIR: Path = Path.home() / "Library" / "Logs" / "TrainIQ"
+
 
 def configure(log_dir: Path) -> None:
     """Idempotent — safe to call more than once (e.g. in tests)."""
