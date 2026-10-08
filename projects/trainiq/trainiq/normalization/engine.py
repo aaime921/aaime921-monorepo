@@ -86,12 +86,15 @@ def _build_weigh_in_record(
     # BL-009 rather than silently expanding this slice's scope into a
     # schema migration that wasn't part of what was approved.
     #
-    # ADR-039 / Issue #38: plausibility is evaluated here, independent of
-    # provider — any connector with record_kind == WEIGH_IN gets this for
-    # free. `recent_weights_kg` must already be the athlete's prior
-    # unflagged (or BO-confirmed) readings, rolling-window-limited and
-    # chronologically prior to this record — that filtering/ordering is
-    # the caller's (SynchronizationEngine's) job, not this function's.
+    # ADR-039 / Issue #38, corrected by Issue #42: plausibility is
+    # evaluated here, independent of provider — any connector with
+    # record_kind == WEIGH_IN gets this for free. `recent_weights_kg` must
+    # already be the athlete's prior readings whose WEIGHT was not flagged
+    # (or was BO-confirmed), rolling-window-limited and chronologically
+    # prior to this record — that filtering/ordering is the caller's
+    # (SynchronizationEngine's) job, not this function's. The weight and
+    # body-fat verdicts are independent (Issue #42) — one never suppresses
+    # the other.
     verdict = evaluate_weigh_in_plausibility(
         normalized.get("weight_kg"), normalized.get("body_fat_pct"), recent_weights_kg
     )
@@ -102,6 +105,8 @@ def _build_weigh_in_record(
         "weight_kg": normalized.get("weight_kg"),
         "body_fat_pct": normalized.get("body_fat_pct"),
         "muscle_mass_pct": normalized.get("muscle_mass_pct"),
-        "is_flagged_implausible": not verdict.is_plausible,
-        "plausibility_reason": verdict.reason,
+        "is_weight_flagged_implausible": not verdict.is_weight_plausible,
+        "weight_plausibility_reason": verdict.weight_reason,
+        "is_body_fat_flagged_implausible": not verdict.is_body_fat_plausible,
+        "body_fat_plausibility_reason": verdict.body_fat_reason,
     }

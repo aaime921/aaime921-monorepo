@@ -23,9 +23,9 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
-from trainiq.storage.backfill import backfill_weigh_in_plausibility
+from trainiq.storage.backfill import backfill_weigh_in_plausibility, decouple_weigh_in_plausibility
 
-CURRENT_SCHEMA_VERSION = 4
+CURRENT_SCHEMA_VERSION = 5
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -154,6 +154,14 @@ _MIGRATIONS: dict[int, str] = {
         ALTER TABLE weigh_ins ADD COLUMN bo_confirmed_valid INTEGER NOT NULL DEFAULT 0;
         ALTER TABLE weigh_ins ADD COLUMN bo_confirmed_at TEXT;
     """,
+    # ADR-039 (corrected by Issue #42): decouple body-fat plausibility from
+    # weight plausibility. A body-fat verdict must never suppress the weight.
+    5: """
+        ALTER TABLE weigh_ins RENAME COLUMN is_flagged_implausible TO is_weight_flagged_implausible;
+        ALTER TABLE weigh_ins RENAME COLUMN plausibility_reason TO weight_plausibility_reason;
+        ALTER TABLE weigh_ins ADD COLUMN is_body_fat_flagged_implausible INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE weigh_ins ADD COLUMN body_fat_plausibility_reason TEXT;
+    """,
 }
 
 
@@ -210,6 +218,8 @@ def migrate(db_path: Path) -> int:
             conn.executescript(script)
             if version == 4:
                 backfill_weigh_in_plausibility(conn)
+            if version == 5:
+                decouple_weigh_in_plausibility(conn)
             conn.execute("UPDATE schema_version SET version = ?", (version,))
             conn.commit()
         return get_schema_version(conn)

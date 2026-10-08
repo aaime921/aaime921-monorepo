@@ -1194,15 +1194,15 @@ def test_weigh_in_sync_counts_flagged_implausible_records(db):
     assert r.records_inserted == 6
 
     flagged_row = db.execute(
-        "SELECT is_flagged_implausible, plausibility_reason FROM weigh_ins WHERE external_id = 'outlier1'"
+        "SELECT is_weight_flagged_implausible, weight_plausibility_reason FROM weigh_ins WHERE external_id = 'outlier1'"
     ).fetchone()
-    assert flagged_row["is_flagged_implausible"] == 1
-    assert flagged_row["plausibility_reason"] is not None
+    assert flagged_row["is_weight_flagged_implausible"] == 1
+    assert flagged_row["weight_plausibility_reason"] is not None
 
     normal_row = db.execute(
-        "SELECT is_flagged_implausible FROM weigh_ins WHERE external_id = 'w0'"
+        "SELECT is_weight_flagged_implausible FROM weigh_ins WHERE external_id = 'w0'"
     ).fetchone()
-    assert normal_row["is_flagged_implausible"] == 0
+    assert normal_row["is_weight_flagged_implausible"] == 0
 
 
 def test_weigh_in_sync_summary_reports_flagged_count(db):
@@ -1248,9 +1248,9 @@ def test_resync_never_clears_bo_confirmed_valid_on_already_confirmed_row(db):
     """ADR-039's auditability guarantee: once the BO has confirmed a
     flagged reading as valid (via scripts/confirm_weigh_in.py), a later
     resync re-evaluating the same row must re-derive the same
-    is_flagged_implausible/plausibility_reason verdict but must NEVER
-    touch bo_confirmed_valid/bo_confirmed_at — those columns are
-    BO-owned, and _upsert_weigh_in()'s UPDATE statement deliberately
+    is_weight_flagged_implausible/weight_plausibility_reason verdict but
+    must NEVER touch bo_confirmed_valid/bo_confirmed_at — those columns
+    are BO-owned, and _upsert_weigh_in()'s UPDATE statement deliberately
     excludes them."""
     records = _baseline_weigh_ins(5) + [dict(_OUTLIER_READING)]
     connector_1 = MockWeighInConnector("testscale", records)
@@ -1270,12 +1270,44 @@ def test_resync_never_clears_bo_confirmed_valid_on_already_confirmed_row(db):
     engine.run_once([connector_2])
 
     row = db.execute(
-        "SELECT is_flagged_implausible, bo_confirmed_valid, bo_confirmed_at "
+        "SELECT is_weight_flagged_implausible, bo_confirmed_valid, bo_confirmed_at "
         "FROM weigh_ins WHERE external_id = 'outlier1'"
     ).fetchone()
-    assert row["is_flagged_implausible"] == 1  # the rule's own verdict is re-derived, unchanged
+    assert row["is_weight_flagged_implausible"] == 1  # the rule's own verdict is re-derived, unchanged
     assert row["bo_confirmed_valid"] == 1  # BO's confirmation survived the resync
     assert row["bo_confirmed_at"] == confirmed_at
+
+
+def test_body_fat_only_flagged_reading_still_feeds_later_rolling_baseline(db):
+    """Issue #42's core regression, exercised at the sync-engine level:
+    a reading whose body-fat axis trips (and, pre-fix, would have
+    suppressed the whole record) must still contribute its weight to a
+    later record's recent_weights_kg lookup — this is the concrete
+    mechanism by which the old bug silently excluded 123 good readings
+    from ever contributing to anyone else's baseline either."""
+    body_fat_only_flagged = {
+        "external_id": "bf_only", "timestamp": "2026-01-06T08:00:00+00:00",
+        "weight_kg": 84.5, "body_fat_pct": 1.5,
+    }
+    later_reading = {
+        "external_id": "later", "timestamp": "2026-01-07T08:00:00+00:00",
+        "weight_kg": 84.0, "body_fat_pct": 18.0,
+    }
+    records = _baseline_weigh_ins(5) + [body_fat_only_flagged, later_reading]
+    connector = MockWeighInConnector("testscale", records)
+    engine = SynchronizationEngine(db)
+
+    engine.run_once([connector])
+
+    flagged_row = db.execute(
+        "SELECT is_weight_flagged_implausible, is_body_fat_flagged_implausible "
+        "FROM weigh_ins WHERE external_id = 'bf_only'"
+    ).fetchone()
+    assert flagged_row["is_weight_flagged_implausible"] == 0
+    assert flagged_row["is_body_fat_flagged_implausible"] == 1
+
+    recent = engine._recent_weights_before("2026-01-08T00:00:00+00:00", 5)
+    assert 84.5 in recent  # the body-fat-only-flagged row's weight still feeds the window
 
 
 def test_recent_weights_before_excludes_flagged_unconfirmed_readings(db):

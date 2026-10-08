@@ -483,6 +483,59 @@ def test_normalize_weight_kg_is_none_when_scale_data_absent(credential_store):
     assert result["weight_kg"] is None
 
 
+# --- Issue #42: body_fat/muscle_mass = 0.0 is Eufy's "not measured" sentinel
+
+
+def test_normalize_maps_zero_body_fat_to_none(credential_store):
+    """BO-confirmed live evidence: a literal 0 on body_fat means the scale
+    took no impedance reading that time (e.g. weighed with socks on), not
+    a genuine 0% reading. Must normalize to None, never pass through as a
+    literal 0."""
+    fake = FakeEufySession()
+    connector = EufyConnector(credential_store, device_id="dev-1", session=fake)
+    raw = {
+        "id": 1, "device_id": "dev-1", "create_time": "2026-09-11T08:00:00+00:00",
+        "scale_data": {"weight": 822, "body_fat": 0.0, "muscle_mass": 34.0},
+    }
+
+    result = connector.normalize(raw)
+
+    assert result["weight_kg"] == pytest.approx(82.2)
+    assert result["body_fat_pct"] is None
+    assert result["muscle_mass_pct"] == 34.0
+
+
+def test_normalize_maps_zero_muscle_mass_to_none(credential_store):
+    """Same sentinel pattern, BO-confirmed for muscle_mass too."""
+    fake = FakeEufySession()
+    connector = EufyConnector(credential_store, device_id="dev-1", session=fake)
+    raw = {
+        "id": 1, "device_id": "dev-1", "create_time": "2026-09-11T08:00:00+00:00",
+        "scale_data": {"weight": 822, "body_fat": 18.0, "muscle_mass": 0.0},
+    }
+
+    result = connector.normalize(raw)
+
+    assert result["body_fat_pct"] == 18.0
+    assert result["muscle_mass_pct"] is None
+
+
+def test_normalize_passes_through_non_zero_body_fat_and_muscle_mass_unchanged(credential_store):
+    """Regression against over-normalizing: a present, non-zero value must
+    not be touched by the sentinel fix."""
+    fake = FakeEufySession()
+    connector = EufyConnector(credential_store, device_id="dev-1", session=fake)
+    raw = {
+        "id": 1, "device_id": "dev-1", "create_time": "2026-09-11T08:00:00+00:00",
+        "scale_data": {"weight": 822, "body_fat": 18.2, "muscle_mass": 34.1},
+    }
+
+    result = connector.normalize(raw)
+
+    assert result["body_fat_pct"] == 18.2
+    assert result["muscle_mass_pct"] == 34.1
+
+
 def test_extract_resume_cursor_always_returns_a_str(credential_store):
     """Regression test for the live-verified TypeError: 'int' > 'str'.
     create_time from the real API is a Unix epoch integer, not an ISO 8601

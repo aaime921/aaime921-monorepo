@@ -263,19 +263,22 @@ class SynchronizationEngine:
         """Returns "inserted" or "updated" — same real, non-estimated
         pattern as _upsert_normalized_activity above, for the same reason.
 
-        ADR-039 / Issue #38: column lists extended with
-        is_flagged_implausible/plausibility_reason only. Deliberately
-        NEVER bo_confirmed_valid/bo_confirmed_at — those are BO-owned, so a
-        resync must never silently revert a BO confirmation."""
+        ADR-039 / Issue #38, corrected by Issue #42: column lists extended
+        with is_weight_flagged_implausible/weight_plausibility_reason and
+        is_body_fat_flagged_implausible/body_fat_plausibility_reason only.
+        Deliberately NEVER bo_confirmed_valid/bo_confirmed_at — those are
+        BO-owned, so a resync must never silently revert a BO confirmation."""
         cursor = self._conn.execute(
             "INSERT OR IGNORE INTO weigh_ins "
             "(provider, external_id, timestamp, weight_kg, body_fat_pct, muscle_mass_pct, "
-            " is_flagged_implausible, plausibility_reason) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            " is_weight_flagged_implausible, weight_plausibility_reason, "
+            " is_body_fat_flagged_implausible, body_fat_plausibility_reason) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 record["provider"], record["external_id"], record["timestamp"],
                 record["weight_kg"], record["body_fat_pct"], record["muscle_mass_pct"],
-                record["is_flagged_implausible"], record["plausibility_reason"],
+                record["is_weight_flagged_implausible"], record["weight_plausibility_reason"],
+                record["is_body_fat_flagged_implausible"], record["body_fat_plausibility_reason"],
             ),
         )
         if cursor.rowcount == 1:
@@ -283,11 +286,13 @@ class SynchronizationEngine:
 
         self._conn.execute(
             "UPDATE weigh_ins SET timestamp = ?, weight_kg = ?, body_fat_pct = ?, muscle_mass_pct = ?, "
-            "is_flagged_implausible = ?, plausibility_reason = ? "
+            "is_weight_flagged_implausible = ?, weight_plausibility_reason = ?, "
+            "is_body_fat_flagged_implausible = ?, body_fat_plausibility_reason = ? "
             "WHERE provider = ? AND external_id = ?",
             (
                 record["timestamp"], record["weight_kg"], record["body_fat_pct"], record["muscle_mass_pct"],
-                record["is_flagged_implausible"], record["plausibility_reason"],
+                record["is_weight_flagged_implausible"], record["weight_plausibility_reason"],
+                record["is_body_fat_flagged_implausible"], record["body_fat_plausibility_reason"],
                 record["provider"], record["external_id"],
             ),
         )
@@ -307,7 +312,7 @@ class SynchronizationEngine:
         rows = self._conn.execute(
             "SELECT weight_kg FROM weigh_ins "
             "WHERE weight_kg IS NOT NULL AND timestamp < ? "
-            "AND (is_flagged_implausible = 0 OR bo_confirmed_valid = 1) "
+            "AND (is_weight_flagged_implausible = 0 OR bo_confirmed_valid = 1) "
             "ORDER BY timestamp DESC LIMIT ?",
             (timestamp, limit),
         ).fetchall()
@@ -569,7 +574,7 @@ class SynchronizationEngine:
                         inserted_count += 1
                     else:
                         updated_count += 1
-                    if canonical_record.get("is_flagged_implausible"):
+                    if canonical_record.get("is_weight_flagged_implausible"):
                         flagged_implausible_count += 1
 
                 # Connector-owned per the ADR-013 refinement (Epic 2) — the
