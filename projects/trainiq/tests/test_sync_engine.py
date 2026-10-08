@@ -1244,6 +1244,25 @@ def test_activity_sync_summary_always_reports_flagged_zero(db):
     assert "flagged 0 implausible" in log_stream.getvalue()
 
 
+def test_connector_summary_written_to_summary_log_exactly_once(db, tmp_path):
+    """AC3/AC5 (issue #44): summary.log must contain each connector's
+    summary line exactly once per run, not twice. Uses the real file sink
+    (via logging_setup.configure) rather than an in-memory loguru capture,
+    since counting lines in the actual file is what distinguishes "logged
+    once" from "logged twice to the same stream."."""
+    from trainiq import logging_setup
+
+    log_dir = tmp_path / "logs"
+    logging_setup.configure(log_dir)
+
+    engine = SynchronizationEngine(db)
+    connector = MockHealthyConnector("strava", _records(2))
+    engine.run_once([connector])
+
+    summary_log_content = (log_dir / "summary.log").read_text()
+    assert summary_log_content.count("strava: downloaded") == 1
+
+
 def test_resync_never_clears_bo_confirmed_valid_on_already_confirmed_row(db):
     """ADR-039's auditability guarantee: once the BO has confirmed a
     flagged reading as valid (via scripts/confirm_weigh_in.py), a later

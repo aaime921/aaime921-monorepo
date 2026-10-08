@@ -91,7 +91,7 @@ def compute_training_load(normalized: dict, profile: Optional[AthleteProfile]) -
 
 
 def _unknown(reason: str) -> TrainingLoadResult:
-    diagnostic_logger().info(f"normalization: training_load unknown — {reason}")
+    diagnostic_logger().debug(f"normalization: training_load unknown — {reason}")
     return TrainingLoadResult(load=None, method=TrainingLoadMethod.UNKNOWN, reason=reason)
 
 
