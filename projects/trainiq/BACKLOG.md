@@ -88,6 +88,10 @@ value with nowhere to go.
 `bo_confirmed_at` to `weigh_ins` — a different, already-approved migration
 for a different purpose (plausibility flagging, not confidence scoring).
 `source_confidence` remains unaddressed; don't assume v4 covers it.
+Issue #42 (schema v5) renamed two of those v4 columns and added two more
+(splitting weight-plausibility from body-fat-plausibility) — same
+category of unrelated, already-approved migration; `source_confidence`
+remains unaddressed by v5 too.
 
 
 

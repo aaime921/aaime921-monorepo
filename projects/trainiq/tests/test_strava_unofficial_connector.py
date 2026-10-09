@@ -25,6 +25,7 @@ from trainiq.connectors.strava_unofficial import (
     TRAINING_ACTIVITIES_PATH,
     StravaUnofficialConnector,
     StravaUnofficialHTTPError,
+    _detect_system_timezone,
 )
 from trainiq.credentials.store import CredentialStore
 from trainiq.normalization.taxonomy import Discipline, map_discipline
@@ -346,8 +347,8 @@ def test_download_checkpoint_stops_early_mid_page_and_requests_no_further_pages(
     checkpoint items returns only the newer ones, and no second page is
     requested — confirms early-stop, not just correct filtering."""
     since = "2026-01-10T00:00:00+00:00"
-    newer = {"id": 1, "start_date_local_raw": int(datetime(2026, 1, 15, tzinfo=timezone.utc).timestamp())}
-    older = {"id": 2, "start_date_local_raw": int(datetime(2026, 1, 5, tzinfo=timezone.utc).timestamp())}
+    newer = {"id": 1, "start_time": "2026-01-15T00:00:00+0000"}
+    older = {"id": 2, "start_time": "2026-01-05T00:00:00+0000"}
     fake = FakeStravaUnofficialSession()
     fake.script_get_response(_response_page([newer, older], total=50))
     connector = StravaUnofficialConnector(credential_store, session=fake)
@@ -361,7 +362,7 @@ def test_download_checkpoint_stops_early_mid_page_and_requests_no_further_pages(
 
 def test_download_checkpoint_older_than_every_item_proceeds_through_full_pagination(credential_store):
     since = "2020-01-01T00:00:00+00:00"
-    item = {"id": 1, "start_date_local_raw": int(datetime(2026, 1, 15, tzinfo=timezone.utc).timestamp())}
+    item = {"id": 1, "start_time": "2026-01-15T00:00:00+0000"}
     fake = FakeStravaUnofficialSession()
     fake.script_get_response(_response_page([item], total=1))
     connector = StravaUnofficialConnector(credential_store, session=fake)
@@ -531,8 +532,9 @@ def _response_page(models: list[dict], total: int) -> FakeResponse:
 # --- normalize() / _extract_start_time_iso() ------------------------------------
 
 # Shaped like the issue's live-captured evidence
-# (docs/trainiq/requirements/30-strava-unofficial-web-endpoints.md), not
-# the old REST-shaped fixture.
+# (docs/trainiq/requirements/30-strava-unofficial-web-endpoints.md), with
+# `start_time` as the primary field (issue #43) — every live payload seen
+# so far includes it.
 _WEB_ACTIVITY_RECORD = {
     "id": 123,
     "name": "Morning Ride",
@@ -542,7 +544,7 @@ _WEB_ACTIVITY_RECORD = {
     "moving_time_raw": 3500,
     "elapsed_time_raw": 3600,
     "elevation_gain_raw": 120.0,
-    "start_date_local_raw": int(datetime(2026, 1, 5, 7, 0, 0, tzinfo=timezone.utc).timestamp()),
+    "start_time": "2026-01-05T07:00:00+0000",
     "commute": False,
     "private": False,
     "has_latlng": True,
@@ -569,6 +571,176 @@ def test_normalize_maps_web_payload_fields_to_canonical_shape(credential_store):
     assert result["calories"] is None
 
 
+# --- Issue #43: start_time field priority + timezone handling ------------------
+
+def test_normalize_bst_summer_payload_matches_peloton_epoch_for_same_ride(credential_store):
+    """AC3 (summer/BST case): the BO's live evidence — `start_time`
+    carrying the correct UTC instant, with `start_date_local_raw` present
+    but shifted +1h — must normalize to the same instant Peloton reported
+    for the same real-world ride, not the shifted local value."""
+    fake = FakeStravaUnofficialSession()
+    connector = StravaUnofficialConnector(credential_store, session=fake)
+    raw = {
+        **_WEB_ACTIVITY_RECORD,
+        "start_time": "2026-10-07T18:57:34+0000",
+        # BST epoch for the same instant — would wrongly read as 19:57:34
+        # if treated as UTC (today's bug). Present to prove start_time
+        # wins over it, not absence-by-construction.
+        "start_date_local_raw": int(datetime(2026, 10, 7, 19, 57, 34, tzinfo=timezone.utc).timestamp()),
+    }
+    peloton_epoch_utc = datetime(2026, 10, 7, 18, 57, 34, tzinfo=timezone.utc)
+
+    result = connector.normalize(raw)
+
+    assert result["start_time"] == peloton_epoch_utc.isoformat()
+
+
+def test_normalize_gmt_winter_payload_matches_peloton_epoch_for_same_ride(credential_store):
+    """AC3 (winter/GMT case): local time equals UTC, so this must continue
+    to work exactly as before."""
+    fake = FakeStravaUnofficialSession()
+    connector = StravaUnofficialConnector(credential_store, session=fake)
+    raw = {
+        **_WEB_ACTIVITY_RECORD,
+        "start_time": "2026-01-07T18:57:34+0000",
+        "start_date_local_raw": int(datetime(2026, 1, 7, 18, 57, 34, tzinfo=timezone.utc).timestamp()),
+    }
+    peloton_epoch_utc = datetime(2026, 1, 7, 18, 57, 34, tzinfo=timezone.utc)
+
+    result = connector.normalize(raw)
+
+    assert result["start_time"] == peloton_epoch_utc.isoformat()
+
+
+def test_normalize_start_time_with_colon_offset_also_parses_correctly(credential_store):
+    """Not every offset-aware ISO string uses Strava's exact +0000 shape —
+    confirms fromisoformat's handling isn't accidentally narrower."""
+    fake = FakeStravaUnofficialSession()
+    connector = StravaUnofficialConnector(credential_store, session=fake)
+    raw = {**_WEB_ACTIVITY_RECORD, "start_time": "2026-06-01T12:00:00+01:00"}
+
+    result = connector.normalize(raw)
+
+    assert result["start_time"] == datetime(2026, 6, 1, 11, 0, 0, tzinfo=timezone.utc).isoformat()
+
+
+def test_normalize_start_time_without_offset_raises_rather_than_assuming_utc(credential_store):
+    """An offset-naive start_time must never be silently treated as UTC —
+    that would just be today's bug, moved to a different field."""
+    fake = FakeStravaUnofficialSession()
+    connector = StravaUnofficialConnector(credential_store, session=fake)
+    raw = {**_WEB_ACTIVITY_RECORD, "start_time": "2026-06-01T12:00:00"}
+
+    with pytest.raises(StravaUnofficialHTTPError):
+        connector.normalize(raw)
+
+
+def test_normalize_falls_back_to_local_raw_with_explicit_timezone_when_start_time_absent(credential_store):
+    """Fallback path (start_time absent): start_date_local_raw is
+    converted via an explicit local-timezone rule, reproducing the BO's
+    evidence table exactly — never treated as a UTC epoch (today's bug)."""
+    fake = FakeStravaUnofficialSession()
+    connector = StravaUnofficialConnector(
+        credential_store, session=fake, local_timezone="Europe/London"
+    )
+    raw = {k: v for k, v in _WEB_ACTIVITY_RECORD.items() if k != "start_time"}
+    raw["start_date_local_raw"] = int(datetime(2026, 10, 7, 19, 57, 34, tzinfo=timezone.utc).timestamp())
+
+    result = connector.normalize(raw)
+
+    assert result["start_time"] == datetime(2026, 10, 7, 18, 57, 34, tzinfo=timezone.utc).isoformat()
+
+
+def test_normalize_falls_back_to_local_raw_unaffected_in_winter(credential_store):
+    fake = FakeStravaUnofficialSession()
+    connector = StravaUnofficialConnector(
+        credential_store, session=fake, local_timezone="Europe/London"
+    )
+    raw = {k: v for k, v in _WEB_ACTIVITY_RECORD.items() if k != "start_time"}
+    raw["start_date_local_raw"] = int(datetime(2026, 1, 7, 18, 57, 34, tzinfo=timezone.utc).timestamp())
+
+    result = connector.normalize(raw)
+
+    assert result["start_time"] == datetime(2026, 1, 7, 18, 57, 34, tzinfo=timezone.utc).isoformat()
+
+
+def test_normalize_local_raw_fallback_with_no_known_timezone_raises_not_silently_utc(
+    credential_store, monkeypatch
+):
+    """No config value and no detectable system timezone: must fail loud,
+    never guess the local zone is UTC (today's bug, reintroduced). Passing
+    `local_timezone=None` to the constructor means "auto-detect," not
+    "force none" (see __init__), so the no-timezone-resolvable case is
+    simulated by making detection itself report None."""
+    monkeypatch.setattr(
+        "trainiq.connectors.strava_unofficial._detect_system_timezone", lambda: None
+    )
+    fake = FakeStravaUnofficialSession()
+    connector = StravaUnofficialConnector(credential_store, session=fake)
+    raw = {k: v for k, v in _WEB_ACTIVITY_RECORD.items() if k != "start_time"}
+    raw["start_date_local_raw"] = int(datetime(2026, 10, 7, 19, 57, 34, tzinfo=timezone.utc).timestamp())
+
+    with pytest.raises(StravaUnofficialHTTPError):
+        connector.normalize(raw)
+
+
+def test_normalize_local_raw_fallback_with_unknown_zone_name_raises_strava_unofficial_http_error(credential_store):
+    fake = FakeStravaUnofficialSession()
+    connector = StravaUnofficialConnector(credential_store, session=fake, local_timezone="Not/AZone")
+    raw = {k: v for k, v in _WEB_ACTIVITY_RECORD.items() if k != "start_time"}
+    raw["start_date_local_raw"] = int(datetime(2026, 10, 7, 19, 57, 34, tzinfo=timezone.utc).timestamp())
+
+    with pytest.raises(StravaUnofficialHTTPError):
+        connector.normalize(raw)
+
+
+def test_detect_system_timezone_reads_etc_localtime_symlink_target(tmp_path):
+    zoneinfo_dir = tmp_path / "usr" / "share" / "zoneinfo"
+    zoneinfo_dir.mkdir(parents=True)
+    zone_file = zoneinfo_dir / "Europe" / "London"
+    zone_file.parent.mkdir(parents=True)
+    zone_file.write_text("")
+    localtime_link = tmp_path / "localtime"
+    localtime_link.symlink_to(zone_file)
+
+    assert _detect_system_timezone(localtime_link) == "Europe/London"
+
+
+def test_detect_system_timezone_returns_none_when_not_a_symlink(tmp_path):
+    not_a_symlink = tmp_path / "localtime"
+    not_a_symlink.write_text("")
+
+    assert _detect_system_timezone(not_a_symlink) is None
+
+
+def test_detect_system_timezone_returns_none_when_target_missing_entirely(tmp_path):
+    missing = tmp_path / "does_not_exist"
+
+    assert _detect_system_timezone(missing) is None
+
+
+def test_detect_system_timezone_returns_none_when_target_not_under_zoneinfo(tmp_path):
+    target = tmp_path / "some_other_file"
+    target.write_text("")
+    localtime_link = tmp_path / "localtime"
+    localtime_link.symlink_to(target)
+
+    assert _detect_system_timezone(localtime_link) is None
+
+
+def test_connector_without_explicit_local_timezone_detects_system_default(credential_store, monkeypatch):
+    """Constructor default: when the caller doesn't resolve a timezone
+    itself, the connector resolves the system default at construction
+    time (cheap — one symlink read, no network call)."""
+    monkeypatch.setattr(
+        "trainiq.connectors.strava_unofficial._detect_system_timezone", lambda: "Europe/London"
+    )
+    fake = FakeStravaUnofficialSession()
+    connector = StravaUnofficialConnector(credential_store, session=fake)
+
+    assert connector._local_timezone == "Europe/London"
+
+
 def test_normalize_falls_back_to_display_type_when_activity_type_display_name_absent(credential_store):
     fake = FakeStravaUnofficialSession()
     connector = StravaUnofficialConnector(credential_store, session=fake)
@@ -585,7 +757,7 @@ def test_normalize_no_start_time_candidate_present_raises_loudly(credential_stor
     _START_FIELD_CANDIDATES turns out wrong in production."""
     fake = FakeStravaUnofficialSession()
     connector = StravaUnofficialConnector(credential_store, session=fake)
-    raw = {k: v for k, v in _WEB_ACTIVITY_RECORD.items() if k != "start_date_local_raw"}
+    raw = {k: v for k, v in _WEB_ACTIVITY_RECORD.items() if k != "start_time"}
 
     with pytest.raises(StravaUnofficialHTTPError):
         connector.normalize(raw)
@@ -657,3 +829,78 @@ def test_extract_resume_cursor_uses_inherited_base_class_behavior(credential_sto
 
     assert connector.extract_resume_cursor({"start_time": "2026-01-05T07:00:00+00:00"}) == "2026-01-05T07:00:00+00:00"
     assert connector.extract_resume_cursor({}) is None
+
+
+# --- AC6: resume-cursor consistency after renormalization (issue #43) -----------
+
+def test_stale_cursor_from_old_bug_incorrectly_skips_a_later_bst_activity(db, credential_store):
+    """Reproduces the exact failure mode AC6 exists to prevent: a
+    checkpoint computed under the old (wrong, shifted +1h) start_time
+    logic sits ABOVE another activity's true, corrected start_time, so
+    the connector's early-stop comparison wrongly treats that activity as
+    already synced and skips it, even though it was never downloaded."""
+    old_wrong_cursor = "2026-10-07T19:57:34+00:00"  # the old bug's +1h value
+    fake = FakeStravaUnofficialSession()
+    fake.script_get_response(
+        _response_page(
+            [{"id": "new-bst-2", "start_time": "2026-10-07T19:30:00+0000"}], total=1
+        )
+    )
+    connector = StravaUnofficialConnector(
+        credential_store, session=fake, local_timezone="Europe/London"
+    )
+    _authenticate_with_cookie(connector, credential_store)
+
+    activities = connector.download(since=old_wrong_cursor)
+
+    assert activities == []  # wrongly skipped
+
+
+def test_recomputed_cursor_after_renormalization_does_not_skip_that_same_activity(db, credential_store):
+    """The fix: recompute_checkpoint_from_normalized() (issue #43),
+    run after a renormalization pass, re-derives the checkpoint from the
+    now-corrected normalized_activities data instead of leaving the old,
+    too-high cursor in place. With the corrected (lower) cursor, the same
+    activity from the previous test is no longer wrongly skipped."""
+    from trainiq.sync.engine import SynchronizationEngine, recompute_checkpoint_from_normalized
+
+    corrected_max = "2026-10-07T18:57:34+00:00"  # true max after correction
+    db.execute(
+        """
+        INSERT INTO normalized_activities
+            (provider, external_id, start_time, duration_s, discipline, distance_m,
+             avg_hr, max_hr, avg_power, max_power, calories,
+             training_load, training_load_method, source_confidence)
+        VALUES (?, ?, ?, ?, 'cycling', NULL, NULL, NULL, NULL, NULL, NULL, NULL, 'unknown', 0.5)
+        """,
+        (PROVIDER, "already-synced-1", corrected_max, 1800),
+    )
+    db.execute(
+        "INSERT INTO sync_checkpoints (provider, strategy, last_success_at, last_cursor) "
+        "VALUES (?, 'unofficial_session', ?, ?)",
+        (PROVIDER, "2026-10-07T19:57:34+00:00", "2026-10-07T19:57:34+00:00"),
+    )
+    db.commit()
+
+    new_cursor = recompute_checkpoint_from_normalized(db, PROVIDER, strategy="unofficial_session")
+    db.commit()
+
+    assert new_cursor == corrected_max
+    engine = SynchronizationEngine(conn=db)
+    assert engine.get_checkpoint(PROVIDER, strategy="unofficial_session") == corrected_max
+
+    fake = FakeStravaUnofficialSession()
+    fake.script_get_response(
+        _response_page(
+            [{"id": "new-bst-2", "start_time": "2026-10-07T19:30:00+0000"}], total=1
+        )
+    )
+    connector = StravaUnofficialConnector(
+        credential_store, session=fake, local_timezone="Europe/London"
+    )
+    _authenticate_with_cookie(connector, credential_store)
+
+    activities = connector.download(since=new_cursor)
+
+    assert len(activities) == 1
+    assert activities[0]["id"] == "new-bst-2"

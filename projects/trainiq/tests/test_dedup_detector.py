@@ -231,6 +231,58 @@ def test_primary_activity_ids_excludes_only_auto_linked_secondary(conn):
     assert flagged_b in primary_ids
 
 
+def test_backfill_links_previously_missed_bst_pairs_without_duplicating_existing(conn):
+    """AC5 (issue #43): once strava_unofficial's start_time is correct
+    (this issue's fix to the connector), previously-missed BST-era
+    duplicate pairs fall within TIME_WINDOW_S and get linked by a re-run
+    of the existing backfill — without disturbing pairs already linked
+    from winter (GMT) data in a prior run. This exercises detector.py
+    unchanged: it proves the *input data* this issue produces is now
+    correct, not a change to dedup logic itself."""
+    winter_pairs: list[tuple[int, int]] = []
+    for i in range(2):
+        base = datetime(2026, 1, 5 + i, 7, 0, 0, tzinfo=timezone.utc)
+        peloton_id = _insert_activity(
+            conn, "peloton", f"winter-p-{i}", str(int(base.timestamp())), duration_s=1800, discipline="cycling"
+        )
+        strava_id = _insert_activity(
+            conn, "strava_unofficial", f"winter-su-{i}", _iso(base), duration_s=1800, discipline="cycling"
+        )
+        conn.execute(
+            "INSERT INTO dedup_links (activity_id_a, activity_id_b, confidence_score, resolution) "
+            "VALUES (?, ?, ?, ?)",
+            (peloton_id, strava_id, 1.0, "linked:primary=peloton"),
+        )
+        winter_pairs.append((peloton_id, strava_id))
+    conn.commit()
+
+    # Summer (BST) pairs: start_time here is already correctly-normalized
+    # (this fix's output) — exactly within TIME_WINDOW_S of Peloton's,
+    # whereas under the old bug it would have been ~55 minutes outside it.
+    for i in range(3):
+        base = datetime(2026, 7, 1 + i, 18, 57, 34, tzinfo=timezone.utc)
+        _insert_activity(
+            conn, "peloton", f"summer-p-{i}", str(int(base.timestamp())), duration_s=1800, discipline="cycling"
+        )
+        _insert_activity(
+            conn, "strava_unofficial", f"summer-su-{i}", _iso(base), duration_s=1800, discipline="cycling"
+        )
+
+    result = detector.run_backfill(conn)
+
+    assert result.linked == 3
+    assert result.skipped_existing == 2
+    assert result.flagged == 0
+    assert conn.execute("SELECT COUNT(*) AS c FROM dedup_links").fetchone()["c"] == 5
+
+    for peloton_id, strava_id in winter_pairs:
+        row = conn.execute(
+            "SELECT resolution FROM dedup_links WHERE activity_id_a = ? AND activity_id_b = ?",
+            (peloton_id, strava_id),
+        ).fetchone()
+        assert row["resolution"] == "linked:primary=peloton"
+
+
 def test_normalize_start_time_dispatches_by_provider():
     epoch = 1791134056
     dt = detector.normalize_start_time("peloton", str(epoch))

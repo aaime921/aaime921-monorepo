@@ -186,3 +186,26 @@ def test_training_load_is_computable_regardless_of_what_confidence_would_be():
 
     assert sparse_result.load == complete_result.load  # extra unrelated fields change nothing
     assert sparse_result.method == complete_result.method == TrainingLoadMethod.TRIMP
+
+
+# --- Console noise (AC1/AC6, issue #44) ------------------------------------
+
+def test_unknown_training_load_never_prints_to_console_across_many_records(tmp_path, capsys):
+    """The "training_load unknown" message is per-record diagnostic detail
+    with no operator-facing significance — once logging is configured (as
+    every real entry point, including the re-normalize script, now does),
+    it must never reach stdout/stderr, however many records are processed
+    in a run."""
+    from trainiq import logging_setup
+
+    logging_setup.configure(tmp_path)
+
+    for _ in range(50):
+        compute_training_load({"duration_s": 1800}, profile=None)
+
+    captured = capsys.readouterr()
+    assert "training_load unknown" not in captured.out
+    assert "training_load unknown" not in captured.err
+
+    diagnostic_content = (tmp_path / "diagnostic.log").read_text()
+    assert diagnostic_content.count("training_load unknown") == 50

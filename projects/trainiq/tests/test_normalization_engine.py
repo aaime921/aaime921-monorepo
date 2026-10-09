@@ -97,7 +97,7 @@ def test_weigh_in_record_has_no_source_confidence_key_pending_bl_009():
     assert "source_confidence" not in record
 
 
-# --- WEIGH_IN plausibility flagging (ADR-039 / Issue #38) ----------------
+# --- WEIGH_IN plausibility flagging (ADR-039 / Issue #38, corrected by #42)
 
 _BASELINE = [84.0, 85.0, 85.5, 86.0, 83.5]  # athlete's established 80-88kg range
 
@@ -112,13 +112,18 @@ def test_weigh_in_normal_reading_within_baseline_is_not_flagged():
         "eufy", RecordKind.WEIGH_IN, normalized, recent_weights_kg=_BASELINE
     )
 
-    assert record["is_flagged_implausible"] is False
-    assert record["plausibility_reason"] is None
+    assert record["is_weight_flagged_implausible"] is False
+    assert record["weight_plausibility_reason"] is None
+    assert record["is_body_fat_flagged_implausible"] is False
+    assert record["body_fat_plausibility_reason"] is None
 
 
 def test_weigh_in_obvious_outlier_reproducing_issue_evidence_is_flagged():
     """Reproduces the issue's own evidence: 20.7 kg / 5.0% body fat against
-    an 80+ kg baseline."""
+    an 80+ kg baseline. body_fat_pct=5.0 is above the 3.0 floor, so only
+    the weight axis trips here — this was already true under the old
+    combined rule too (the body-fat floor never factored into flagging
+    this specific reading; the weight-deviation axis alone did)."""
     normalized = {
         "external_id": "w5", "timestamp": "2026-07-06T18:43:00+00:00",
         "weight_kg": 20.7, "body_fat_pct": 5.0,
@@ -128,8 +133,9 @@ def test_weigh_in_obvious_outlier_reproducing_issue_evidence_is_flagged():
         "eufy", RecordKind.WEIGH_IN, normalized, recent_weights_kg=_BASELINE
     )
 
-    assert record["is_flagged_implausible"] is True
-    assert record["plausibility_reason"] is not None
+    assert record["is_weight_flagged_implausible"] is True
+    assert record["weight_plausibility_reason"] is not None
+    assert record["is_body_fat_flagged_implausible"] is False
 
 
 def test_weigh_in_borderline_reading_resolves_deterministically():
@@ -151,8 +157,8 @@ def test_weigh_in_borderline_reading_resolves_deterministically():
         "eufy", RecordKind.WEIGH_IN, just_over, recent_weights_kg=_BASELINE
     )
 
-    assert record_at_boundary["is_flagged_implausible"] is False
-    assert record_just_over["is_flagged_implausible"] is True
+    assert record_at_boundary["is_weight_flagged_implausible"] is False
+    assert record_just_over["is_weight_flagged_implausible"] is True
 
 
 def test_weigh_in_with_no_recent_weights_defaults_to_not_flagged():
@@ -166,4 +172,41 @@ def test_weigh_in_with_no_recent_weights_defaults_to_not_flagged():
 
     record = build_canonical_record("eufy", RecordKind.WEIGH_IN, normalized)
 
-    assert record["is_flagged_implausible"] is False
+    assert record["is_weight_flagged_implausible"] is False
+
+
+def test_weigh_in_body_fat_zero_sentinel_does_not_flag_weight():
+    """Core regression (Issue #42, AC6): a reading like 82.2 kg with
+    body_fat_pct=0.0 (already normalized to the connector's sentinel
+    value as of this build_canonical_record() call — this function
+    doesn't know about Eufy's connector, only the value it's given) must
+    not flag the weight. A literal 0 also never trips the body-fat axis,
+    since the `> 0` guard excludes it there too."""
+    normalized = {
+        "external_id": "w9", "timestamp": "2026-09-11T08:00:00+00:00",
+        "weight_kg": 82.2, "body_fat_pct": 0.0,
+    }
+
+    record = build_canonical_record(
+        "eufy", RecordKind.WEIGH_IN, normalized, recent_weights_kg=_BASELINE
+    )
+
+    assert record["is_weight_flagged_implausible"] is False
+    assert record["is_body_fat_flagged_implausible"] is False
+
+
+def test_weigh_in_non_zero_sub_floor_body_fat_flags_only_that_axis():
+    """Proves the decoupling, not just sentinel cleanup: a genuinely
+    implausible non-zero body-fat value with a normal weight must flag
+    only the body-fat axis (AC2/AC3)."""
+    normalized = {
+        "external_id": "w10", "timestamp": "2026-01-05T06:30:00+00:00",
+        "weight_kg": 85.0, "body_fat_pct": 1.5,
+    }
+
+    record = build_canonical_record(
+        "eufy", RecordKind.WEIGH_IN, normalized, recent_weights_kg=_BASELINE
+    )
+
+    assert record["is_weight_flagged_implausible"] is False
+    assert record["is_body_fat_flagged_implausible"] is True

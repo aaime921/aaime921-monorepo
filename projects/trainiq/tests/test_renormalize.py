@@ -10,6 +10,8 @@ small SQLite DB via open_db(), never touches APP_SUPPORT_DIR/trainiq.db.
 from __future__ import annotations
 
 import json
+import runpy
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -20,6 +22,8 @@ from trainiq.connectors.strava_unofficial import PROVIDER, StravaUnofficialConne
 from trainiq.credentials.store import CredentialStore
 from trainiq.normalization.renormalize import renormalize_provider
 from trainiq.storage.schema import open_db
+
+SCRIPT_PATH = Path(__file__).resolve().parent.parent / "scripts" / "renormalize_strava_unofficial.py"
 
 
 @pytest.fixture(autouse=True)
@@ -76,7 +80,7 @@ def _raw_payload(external_id: int, display_type: str, activity_type_display_name
         "moving_time_raw": 1800,
         "elapsed_time_raw": 1900,
         "elevation_gain_raw": 50.0,
-        "start_date_local_raw": int(datetime(2026, 1, 5, 7, 0, 0, tzinfo=timezone.utc).timestamp()),
+        "start_time": "2026-01-05T07:00:00+0000",
         "commute": False,
         "private": False,
         "has_latlng": True,
@@ -274,3 +278,95 @@ def test_renormalize_omitted_raw_transform_is_byte_identical_to_today(db, connec
 
     assert without_param == with_none
     assert rows_without == rows_with_none
+
+
+def test_renormalize_corrects_bst_shifted_start_time(db, connector):
+    """AC4 (issue #43): a row stored under the old bug — start_time
+    shifted +1h because start_date_local_raw was read as UTC — is
+    corrected to the real UTC instant once re-normalized against the
+    unchanged raw payload (which already carries the correct start_time
+    field), without touching raw_activities."""
+    correct_utc = datetime(2026, 10, 7, 18, 57, 34, tzinfo=timezone.utc)
+    wrong_stored = datetime(2026, 10, 7, 19, 57, 34, tzinfo=timezone.utc)  # old bug's +1h
+    payload = {
+        "id": 99,
+        "name": "Evening Ride",
+        "display_type": "Ride",
+        "activity_type_display_name": "Ride",
+        "distance_raw": 20000.0,
+        "moving_time_raw": 2800,
+        "elapsed_time_raw": 2900,
+        "elevation_gain_raw": 80.0,
+        "start_time": correct_utc.strftime("%Y-%m-%dT%H:%M:%S+0000"),
+        "start_date_local_raw": int(wrong_stored.timestamp()),
+        "commute": False,
+        "private": False,
+        "has_latlng": True,
+        "description": "",
+    }
+    payload_json = json.dumps(payload)
+    db.execute(
+        "INSERT INTO raw_activities (provider, external_id, payload_json, fetched_at) "
+        "VALUES (?, ?, ?, ?)",
+        (PROVIDER, "99", payload_json, "2026-10-07T20:00:00+00:00"),
+    )
+    db.execute(
+        """
+        INSERT INTO normalized_activities
+            (provider, external_id, start_time, duration_s, discipline, distance_m,
+             avg_hr, max_hr, avg_power, max_power, calories,
+             training_load, training_load_method, source_confidence)
+        VALUES (?, ?, ?, ?, 'cycling', ?, NULL, NULL, NULL, NULL, NULL, NULL, 'unknown', 0.5)
+        """,
+        (PROVIDER, "99", wrong_stored.isoformat(), 2900, 20000.0),
+    )
+    db.commit()
+
+    renormalize_provider(db, PROVIDER, connector)
+    db.commit()
+
+    row = db.execute(
+        "SELECT start_time FROM normalized_activities WHERE provider = ? AND external_id = ?",
+        (PROVIDER, "99"),
+    ).fetchone()
+    assert row["start_time"] == correct_utc.isoformat()
+
+    raw_row = db.execute(
+        "SELECT payload_json FROM raw_activities WHERE provider = ? AND external_id = ?",
+        (PROVIDER, "99"),
+    ).fetchone()
+    assert raw_row["payload_json"] == payload_json
+
+
+# --- Console noise (AC1/AC6, issue #44) ------------------------------------
+
+class _StopAfterConfigure(Exception):
+    """Raised by the fake configure() below to short-circuit the script
+    before it opens a real database — this test only needs to confirm the
+    call happens, and happens first, not exercise the rest of main()."""
+
+
+def test_renormalize_script_calls_logging_setup_configure_first(monkeypatch, tmp_path):
+    """Structural guarantee behind AC1/AC6: without this call, loguru's
+    default stderr handler stays active and every per-record diagnostic
+    message (e.g. "training_load unknown") floods the console. Asserts
+    the script's main() calls trainiq.logging_setup.configure() as its
+    first action, before the real DB open."""
+    import trainiq.logging_setup as logging_setup_module
+
+    calls: list[Path] = []
+
+    def _fake_configure(log_dir):
+        calls.append(log_dir)
+        raise _StopAfterConfigure()
+
+    monkeypatch.setattr(logging_setup_module, "configure", _fake_configure)
+    monkeypatch.setattr(sys, "argv", [
+        "renormalize_strava_unofficial.py",
+        "--db-path", str(tmp_path / "trainiq.db"),
+    ])
+
+    with pytest.raises(_StopAfterConfigure):
+        runpy.run_path(str(SCRIPT_PATH), run_name="__main__")
+
+    assert calls == [logging_setup_module.DEFAULT_LOG_DIR]
