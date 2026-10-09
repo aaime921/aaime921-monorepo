@@ -224,7 +224,9 @@ def test_v2_to_v3_migration_preserves_existing_data(tmp_path):
     # Simulate "was already at v2" by manually rolling schema_version back
     # and undoing everything v3+ added, then re-migrating. weigh_ins must
     # also be rolled back to its pre-v4 shape (ADR-039), and
-    # normalized_activities to its pre-v5 shape (issue #46) — otherwise
+    # normalized_activities to its pre-v6 shape (issue #46, which also
+    # subsumes issue #48's v7 columns since both are added via ADD COLUMN
+    # on top of the v2-era table created below) — otherwise
     # re-running those migration scripts below would try to add columns
     # that already exist.
     conn = sqlite3.connect(db_path)
@@ -526,3 +528,47 @@ def test_v4_to_v5_backfill_reproduces_bo_evidence_exactly(tmp_path):
 
     assert rows["bad1"][3] == 1  # bo_confirmed_valid untouched
     assert rows["bad1"][4] == "2026-01-01T00:00:00Z"  # bo_confirmed_at untouched
+
+
+# --- Issue #48: elevation gain, moving time, indoor/outdoor flag -----------
+
+def test_v7_migration_adds_elevation_moving_time_indoor_columns(tmp_path):
+    db_path = tmp_path / "trainiq.db"
+    version = schema.migrate(db_path)
+    assert version == schema.CURRENT_SCHEMA_VERSION
+
+    conn = sqlite3.connect(db_path)
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(normalized_activities)")}
+    conn.close()
+    assert {"elevation_gain_m", "moving_time_s", "is_indoor"} <= columns
+
+
+def test_v7_migration_leaves_pre_existing_rows_null_not_false_or_zero(tmp_path):
+    """Direct proof of AC3 at the schema layer, independent of any
+    connector: a row that existed before this migration must read back
+    NULL for all three new columns, never a fabricated 0/False default —
+    "missing" and "confirmed outdoor/zero-elevation" are different facts."""
+    db_path = tmp_path / "trainiq.db"
+    conn = sqlite3.connect(db_path)
+    conn.executescript(schema._MIGRATIONS[1])
+    conn.execute("UPDATE schema_version SET version = 1")
+    conn.execute(
+        """
+        INSERT INTO normalized_activities
+            (provider, external_id, start_time, duration_s, discipline, source_confidence)
+        VALUES ('strava_unofficial', 'pre-existing-1', '2026-01-01T00:00:00Z', 1800, 'cycling', 0.5)
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    version = schema.migrate(db_path)
+    assert version == schema.CURRENT_SCHEMA_VERSION
+
+    conn = sqlite3.connect(db_path)
+    row = conn.execute(
+        "SELECT elevation_gain_m, moving_time_s, is_indoor FROM normalized_activities "
+        "WHERE external_id = 'pre-existing-1'"
+    ).fetchone()
+    conn.close()
+    assert row == (None, None, None)

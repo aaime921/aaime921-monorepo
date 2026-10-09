@@ -192,6 +192,17 @@ class StravaConnector(Connector):
             "average_watts": activity.average_watts,
             "max_watts": activity.max_watts,
             "distance": float(activity.distance) if activity.distance is not None else None,
+            # Issue #48: stravalib exposes these on the same SummaryActivity
+            # object already in use here — confirmed in requirements doc.
+            # Captured here (not just in normalize()) or they're discarded
+            # before normalize() ever sees them.
+            "total_elevation_gain": (
+                float(activity.total_elevation_gain)
+                if activity.total_elevation_gain is not None
+                else None
+            ),
+            "moving_time": int(activity.moving_time) if activity.moving_time is not None else None,
+            "trainer": activity.trainer,
             # Issue #46: for a Peloton-synced ride, Strava's own `name`
             # already carries the class title and instructor (e.g. "45 min
             # Power Zone Max Ride with Matt Wilpers") — previously read
@@ -224,6 +235,15 @@ class StravaConnector(Connector):
             # Never fabricated — the summary endpoint genuinely doesn't
             # report this (see module docstring's KNOWN LIMITATION).
             "calories": None,
+            # Issue #48. raw.get(...), not raw[...]: these three keys are new
+            # as of this issue, so any raw_activities row stored before this
+            # fix genuinely lacks them — must resolve to None, not KeyError,
+            # for renormalize_provider() to be able to re-process old rows at
+            # all (an old row's canonical fields just stay NULL, per the
+            # Backfill note — not a crash).
+            "elevation_gain_m": raw.get("total_elevation_gain"),
+            "moving_time_s": raw.get("moving_time"),
+            "is_indoor": raw.get("trainer"),
             "synced_at": datetime.now(timezone.utc).isoformat(),
             # Issue #46 (AC3): raw `name` persisted independent of any
             # Peloton link — the linked-pair precedence (AC4) is enforced
