@@ -74,7 +74,7 @@ Feature 3.6 (issue #46 — class title/instructor/class type/planned length):
   `download()` fetches and attaches per-class metadata for every
   `workout_type == "class"` workout.
 
-Feature 3.7 (issue #58 — resolves BL-011: two-step `peloton_id` ->
+Feature 3.9 (issue #58 — resolves BL-011: two-step `peloton_id` ->
   `ride_id` resolution): #46's single-call lookup
   (`GET /api/ride/{peloton_id}/details`, treating a workout's `peloton_id`
   as if it were already a ride id) was disproved live against the BO's
@@ -88,6 +88,72 @@ Feature 3.7 (issue #58 — resolves BL-011: two-step `peloton_id` ->
   `docs/trainiq/architecture/58-peloton-class-lookup-ride-id-resolution.md`
   for the live-verified response shapes, the two-cache resolution in
   `download()`, and the `difficulty_estimate` column this issue adds.
+
+Feature 3.7 (issue #47, AC1 only — HR-zone durations + effort points):
+  `normalize()` now also reads `effort_zones.heart_rate_zone_durations`
+  (z1-z5 seconds) and `effort_zones.total_effort_points` off the SAME
+  list-endpoint record already fetched above (issue #5) — CONFIRMED,
+  live-verified field names (docs/trainiq/verification/peloton-2026-09-28.md's
+  second example record), unlike #46's constants above. `effort_zones:
+  null` (also confirmed to occur, same verification file's first record)
+  means every one of these fields stays NULL, never zero or fabricated.
+
+  DEVIATION from docs/trainiq/architecture/47-peloton-heart-rate-capture.md's
+  literal code sample, flagged here per docs/trainiq/roles/developer.md
+  ("if you need to deviate, explain why"): the architecture doc has
+  download() attach these as connector-internal `_hr_zone_*_s` keys (the
+  #45/#46 pattern), with normalize() reading those. This implementation
+  instead has normalize() read `effort_zones` straight off `raw`, with no
+  download()-side step at all. Reason: `effort_zones` is already sitting
+  on the raw payload verbatim with zero extra network cost — unlike every
+  other connector-internal key this project uses the underscore-prefix
+  pattern for (_class_title, _avg_hr, _distance_unit, ...), there is no
+  "fetch result to smuggle through a dict" here, so the indirection buys
+  nothing. It actively costs something: the architecture's own AC4 backfill
+  script only re-parses already-stored raw_activities payloads for class
+  metadata and the (future) performance endpoint, never for zone data — had
+  normalize() depended on a download()-only key, the existing 136 workouts'
+  zone data could never be backfilled by ANY mechanism (not the backfill
+  script, and not trainiq.normalization.renormalize's existing
+  renormalize_provider(), which calls connector.normalize() directly against
+  stored raw payloads with no new network I/O — see that module's
+  docstring). Reading `effort_zones` directly in normalize() instead means
+  renormalize_provider() backfills all 136 existing Peloton workouts' zone
+  data for free, with no new script needed for AC4's "fields in ACs 1-2"
+  coverage of AC1 specifically.
+
+  AC2 of #47 is implemented separately — see Feature 3.8 below. This
+  paragraph is left as the historical record of why AC1 shipped on its own
+  first (BL-012).
+
+Feature 3.8 (issue #47, AC2 — avg/max HR, max power): `fetch_workout_performance()`
+  calls the per-workout performance endpoint and `download()` attaches its
+  result (gated on the same `is_new_since_checkpoint` check #46 already
+  computes per workout, independent of class status — any discipline can
+  have HR data) so `normalize()` can read `avg_hr`/`max_hr`/`max_power` for
+  real instead of hardcoding them to None. CONFIRMED against the BO's real
+  account, 2026-10-09 (`docs/trainiq/verification/peloton-2026-09-28.md`'s
+  dated addendum) — this resolves BL-012, the only item in BACKLOG.md that
+  was ever a "zero code, blocking" gap rather than a flagged-uncertain
+  guess.
+
+  DEVIATION from docs/trainiq/architecture/47-peloton-heart-rate-capture.md's
+  literal naming: that doc calls the new status column `hr_fetch_status`.
+  This implementation instead reuses `PERFORMANCE_FETCH_STATUS_OK`/
+  `PERFORMANCE_FETCH_STATUS_FAILED` and a `performance_fetch_status` column,
+  per issue #57's architecture doc
+  (`docs/trainiq/architecture/57-peloton-distance-performance-graph-source.md`,
+  "Approach" — written after #47's own doc, while #47 still had no PR/branch):
+  #57's distance fix and this issue's HR/power both come from the exact same
+  `fetch_workout_performance()` call, so a per-concern status column would
+  always move in lockstep with this one — #57's doc explicitly directs #47
+  to reuse its column rather than add a second one. As of this change, #57
+  itself has no landed code yet (architecture doc only), so this is the
+  first implementation of `fetch_workout_performance()`/
+  `PERFORMANCE_ENDPOINT_TEMPLATE`/`_parse_performance_response()` — #57,
+  when implemented, should extend `_parse_performance_response()` with its
+  own `summaries`-based distance extraction from the same already-parsed
+  response body, not add a second network call.
 """
 
 from __future__ import annotations
@@ -102,7 +168,7 @@ from typing import Any
 from trainiq.connectors.base import CapabilityTier, Connector, ConnectorState
 from trainiq.credentials.store import CredentialStore
 from trainiq.logging_setup import diagnostic_logger
-from trainiq.sync.engine import AuthenticationError, TransientError
+from trainiq.sync.engine import AuthenticationError, TransientError, retry_with_backoff
 
 PROVIDER = "peloton"
 
@@ -242,6 +308,103 @@ DIFFICULTY_ESTIMATE_FIELD = "difficulty_estimate"  # ride.difficulty_estimate
 CLASS_TYPES_FIELD = "class_types"         # top-level list of {name: str}
 CLASS_TYPE_NAME_FIELD = "name"
 
+# Issue #47, AC1 — CONFIRMED, live-verified (docs/trainiq/verification/
+# peloton-2026-09-28.md's second example record). Unlike the #46 constants
+# above, no Task 1 dependency: these sit on the same list-endpoint record
+# download() already walks, with the exact field names this evidence shows.
+EFFORT_ZONES_FIELD = "effort_zones"
+HR_ZONE_DURATIONS_FIELD = "heart_rate_zone_durations"
+TOTAL_EFFORT_POINTS_FIELD = "total_effort_points"
+HR_ZONE_DURATION_FIELDS: dict[int, str] = {
+    1: "heart_rate_z1_duration",
+    2: "heart_rate_z2_duration",
+    3: "heart_rate_z3_duration",
+    4: "heart_rate_z4_duration",
+    5: "heart_rate_z5_duration",
+}
+
+# Issue #47, AC2 — CONFIRMED against the BO's real account, 2026-10-09
+# (docs/trainiq/verification/peloton-2026-09-28.md's dated addendum).
+# Resolves BL-012. `every_n` is the literal param the BO's own capture
+# used; the response's top-level "metrics"/"summaries" lists are present
+# regardless of its value (only the per-interval "values" series' density
+# depends on it), so this connector's use (summary stats only) is not
+# sensitive to the exact number chosen here.
+PERFORMANCE_ENDPOINT_TEMPLATE = "/api/workout/{workout_id}/performance_graph"
+PERFORMANCE_ENDPOINT_PARAMS: dict[str, Any] = {"every_n": 60}
+
+METRICS_FIELD = "metrics"
+METRIC_SLUG_FIELD = "slug"
+METRIC_AVERAGE_VALUE_FIELD = "average_value"
+METRIC_MAX_VALUE_FIELD = "max_value"
+METRIC_DISPLAY_UNIT_FIELD = "display_unit"
+
+HEART_RATE_METRIC_SLUG = "heart_rate"
+HEART_RATE_DISPLAY_UNIT = "bpm"
+OUTPUT_METRIC_SLUG = "output"
+OUTPUT_DISPLAY_UNIT = "watts"
+
+# Shared with issue #57 (distance, same fetch_workout_performance() call) —
+# see Feature 3.8's module docstring for why this is NOT named
+# hr_fetch_status, the name #47's own architecture doc originally proposed.
+# NULL (column default): never attempted this pass — COALESCE preserves
+# prior state, same convention as #46's absent _class_* keys.
+PERFORMANCE_FETCH_STATUS_OK = "ok"          # attempted, response parsed
+                                             # (avg_hr/max_hr/max_power may
+                                             # still individually be None —
+                                             # a sparse but well-formed response)
+PERFORMANCE_FETCH_STATUS_FAILED = "failed"  # attempted, fetch itself failed
+
+
+def _coerce_int(value: Any) -> int | None:
+    """metrics[].average_value/max_value can come back as a float (e.g.
+    135.0) even though avg_hr/max_hr/max_power are INTEGER columns —
+    rounds rather than truncates; never raises for a non-numeric value."""
+    if value is None:
+        return None
+    try:
+        return round(value)
+    except TypeError:
+        return None
+
+
+def _parse_performance_response(body: dict[str, Any]) -> dict[str, Any]:
+    """Issue #47, AC2 — CONFIRMED (see PERFORMANCE_ENDPOINT_TEMPLATE above):
+    `body["metrics"]` is a list of per-metric summary dicts, each with a
+    "slug" ("heart_rate", "output", "cadence", ...), "average_value",
+    "max_value", and "display_unit". Looked up by slug, never by position
+    — Peloton does not document a stable ordering. A workout with no HR
+    monitor paired simply has no "heart_rate" entry at all -> avg_hr/max_hr
+    stay None, never fabricated or derived from anything else. Never raises
+    for a well-formed-but-data-sparse response — that is a legitimate set
+    of Nones, not a fetch failure (see fetch_workout_performance())."""
+    result: dict[str, Any] = {"avg_hr": None, "max_hr": None, "max_power": None}
+    metrics = body.get(METRICS_FIELD)
+    if not isinstance(metrics, list):
+        return result
+    for metric in metrics:
+        if not isinstance(metric, dict):
+            continue
+        slug = metric.get(METRIC_SLUG_FIELD)
+        if slug == HEART_RATE_METRIC_SLUG:
+            if metric.get(METRIC_DISPLAY_UNIT_FIELD) == HEART_RATE_DISPLAY_UNIT:
+                result["avg_hr"] = _coerce_int(metric.get(METRIC_AVERAGE_VALUE_FIELD))
+                result["max_hr"] = _coerce_int(metric.get(METRIC_MAX_VALUE_FIELD))
+            else:
+                diagnostic_logger().warning(
+                    f"{PROVIDER}: unexpected heart_rate display_unit "
+                    f"{metric.get(METRIC_DISPLAY_UNIT_FIELD)!r} — avg_hr/max_hr stored as NULL, not guessed"
+                )
+        elif slug == OUTPUT_METRIC_SLUG:
+            if metric.get(METRIC_DISPLAY_UNIT_FIELD) == OUTPUT_DISPLAY_UNIT:
+                result["max_power"] = _coerce_int(metric.get(METRIC_MAX_VALUE_FIELD))
+            else:
+                diagnostic_logger().warning(
+                    f"{PROVIDER}: unexpected output display_unit "
+                    f"{metric.get(METRIC_DISPLAY_UNIT_FIELD)!r} — max_power stored as NULL, not guessed"
+                )
+    return result
+
 
 def _is_class_workout(raw: dict[str, Any]) -> bool:
     """raw[WORKOUT_TYPE_FIELD] == "class" today. Falls back to "has a
@@ -293,7 +456,7 @@ def apply_class_metadata_update(conn: sqlite3.Connection, external_id: str, fiel
     columns (schema.py's own comment already documents that precedent for
     the same reason: a value some other process legitimately owns,
     supplementary to the row's canonical identity). Caller commits; this
-    function does not. Used by scripts/backfill_peloton_class_metadata.py.
+    function does not. Used by scripts/backfill_peloton_workout_details.py.
 
     Issue #58 adds difficulty_estimate as a 6th column here (the backfill
     script never goes through upsert_normalized_activity()'s COALESCE
@@ -310,6 +473,26 @@ def apply_class_metadata_update(conn: sqlite3.Connection, external_id: str, fiel
             fields.get("activity_title"), fields.get("instructor_name"), fields.get("class_type"),
             fields.get("planned_duration_s"), fields.get("provider_class_id"),
             fields.get("difficulty_estimate"), external_id,
+        ),
+    )
+
+
+def apply_hr_performance_update(conn: sqlite3.Connection, external_id: str, fields: dict[str, Any]) -> None:
+    """Issue #47, AC2 (BL-012). Updates ONLY avg_hr, max_hr, max_power, and
+    performance_fetch_status on an existing normalized_activities row. Same
+    narrow single-writer-invariant exception as apply_class_metadata_update()
+    above, same reasoning (schema.py's bo_confirmed_valid/bo_confirmed_at
+    precedent). Caller commits; this function does not. Used by
+    scripts/backfill_peloton_workout_details.py."""
+    conn.execute(
+        """
+        UPDATE normalized_activities
+        SET avg_hr = ?, max_hr = ?, max_power = ?, performance_fetch_status = ?
+        WHERE provider = 'peloton' AND external_id = ?
+        """,
+        (
+            fields.get("avg_hr"), fields.get("max_hr"), fields.get("max_power"),
+            fields.get("performance_fetch_status"), external_id,
         ),
     )
 
@@ -611,7 +794,7 @@ class PelotonConnector(Connector):
 
     def fetch_class_details(self, ride_id: str) -> dict[str, Any] | None:
         """Public (not `_`-prefixed): also called directly by
-        scripts/backfill_peloton_class_metadata.py, so the HTTP/retry/
+        scripts/backfill_peloton_workout_details.py, so the HTTP/retry/
         error-shape logic exists in exactly one place. Returns None for a
         confirmed "this class no longer exists" response (404) — logged by
         the caller, never raised as PelotonHTTPError for that specific
@@ -630,6 +813,46 @@ class PelotonConnector(Connector):
             f"{self._base_url}{RIDE_DETAIL_ENDPOINT_TEMPLATE.format(ride_id=ride_id)}",
             not_found_returns_none=True,
         )
+
+    def fetch_workout_performance(self, workout_id: str) -> dict[str, Any] | None:
+        """Issue #47, AC2. Public (not `_`-prefixed): also called directly
+        by scripts/backfill_peloton_workout_details.py, so the HTTP/retry/
+        parsing logic exists in exactly one place (#46's reasoning for
+        fetch_class_details(), reused). Returns None for ANY failure short
+        of AuthenticationError — AC5 explicitly wants every
+        performance-fetch failure logged and degraded to NULL, for both
+        the live sync path and the backfill tool, never aborting the run
+        over one workout's missing HR data. This is a deliberately WIDER
+        safety net than fetch_class_details(), which only treats a
+        confirmed 404 this way and lets TransientError/429/5xx propagate
+        to the Sync Engine's own retry policy for the whole sync attempt —
+        correct for supplementary enrichment data, not for a class lookup.
+
+        AuthenticationError (401/403) still propagates unchanged — an
+        invalid session is a connector-wide concern (ADR-009's degradation
+        path), not a per-workout data gap, and must not be silently
+        swallowed here.
+
+        CONFIRMED endpoint/response shape — see PERFORMANCE_ENDPOINT_TEMPLATE
+        above."""
+        if self._active_auth_header is None:
+            raise AuthenticationError(f"{PROVIDER}: fetch_workout_performance() called before a successful authenticate()")
+        try:
+            body = retry_with_backoff(
+                lambda: self._authenticated_get(
+                    f"{self._base_url}{PERFORMANCE_ENDPOINT_TEMPLATE.format(workout_id=workout_id)}",
+                    params=PERFORMANCE_ENDPOINT_PARAMS,
+                ),
+                PROVIDER,
+            )
+        except AuthenticationError:
+            raise
+        except (TransientError, PelotonHTTPError) as exc:
+            diagnostic_logger().warning(
+                f"{PROVIDER}: performance fetch failed for workout_id={workout_id!r}: {exc}"
+            )
+            return None
+        return _parse_performance_response(body)
 
     def download(self, since: str | None = None) -> list[dict[str, Any]]:
         if self._active_auth_header is None:
@@ -686,11 +909,34 @@ class PelotonConnector(Connector):
         session_ride_id_cache: dict[Any, str | None] = {}
         ride_details_cache: dict[Any, dict[str, Any] | None] = {}
         for workout in workouts:
+            # Computed once per workout, shared by the class-detail lookup
+            # (#46) below and the performance fetch (#47 AC2) further down
+            # — not recomputed twice for the same workout.
+            start_time = workout.get("start_time")
+            is_new_since_checkpoint = since_epoch is None or (start_time is not None and start_time > since_epoch)
+            # Issue #47, AC2: the performance fetch is independent of class
+            # status — any discipline (strength, running, ...) can have a
+            # paired HR monitor, not just rides — so it's gated on the
+            # checkpoint alone, reusing is_new_since_checkpoint computed
+            # above rather than a second, class-only condition.
+            if is_new_since_checkpoint:
+                performance = self.fetch_workout_performance(workout.get("id"))
+                if performance is None:
+                    workout["_performance_fetch_status"] = PERFORMANCE_FETCH_STATUS_FAILED
+                else:
+                    workout["_performance_fetch_status"] = PERFORMANCE_FETCH_STATUS_OK
+                    workout["_avg_hr"] = performance.get("avg_hr")
+                    workout["_max_hr"] = performance.get("max_hr")
+                    workout["_max_power"] = performance.get("max_power")
+            # else: not new since checkpoint — every _avg_hr/_max_hr/
+            # _max_power/_performance_fetch_status key stays ABSENT, same
+            # "not attempted this pass" semantics as the class-metadata
+            # keys above — COALESCE preserves whatever is already stored.
+
             if not _is_class_workout(workout):
                 workout["_class_type"] = CLASS_TYPE_NOT_A_CLASS  # cheap, no network, every run
                 continue
-            start_time = workout.get("start_time")
-            is_new_since_checkpoint = since_epoch is None or (start_time is not None and start_time > since_epoch)
+
             if not is_new_since_checkpoint:
                 # Deliberately leaves every _class_* key ABSENT — see
                 # normalize()'s handling and the COALESCE-based upsert in
@@ -767,6 +1013,21 @@ class PelotonConnector(Connector):
         else:
             distance_m = None
 
+        # Issue #47, AC1: read straight off `raw` (not a download()-attached
+        # underscore key — see Feature 3.7's module docstring for why).
+        # `effort_zones: null` (confirmed to occur) -> every one of these 6
+        # fields is None, never zero.
+        effort_zones = raw.get(EFFORT_ZONES_FIELD)
+        if effort_zones is not None:
+            zone_durations = effort_zones.get(HR_ZONE_DURATIONS_FIELD) or {}
+            hr_zone_seconds = {
+                zone_n: zone_durations.get(zone_key) for zone_n, zone_key in HR_ZONE_DURATION_FIELDS.items()
+            }
+            effort_points = effort_zones.get(TOTAL_EFFORT_POINTS_FIELD)
+        else:
+            hr_zone_seconds = {zone_n: None for zone_n in HR_ZONE_DURATION_FIELDS}
+            effort_points = None
+
         return {
             "provider": PROVIDER,
             "external_id": str(raw["id"]),
@@ -778,19 +1039,26 @@ class PelotonConnector(Connector):
             # the real discipline value distinctly from `ride_type`-style
             # metadata Peloton also reports.
             "discipline_raw": discipline,
-            # Genuinely unavailable in the real API response (issue #5):
-            # `effort_zones` gives only per-heart-rate-zone durations and a
-            # total effort-points score, never a plain avg/max bpm — never
-            # fabricated from it, per the project's never-fabricate standard.
-            "avg_hr": None,
-            "max_hr": None,
+            # Issue #47, AC2 (BL-012, resolved): read-only, never derived
+            # here — download() is the only place that decides these (the
+            # performance-endpoint network fetch, skip-if-already-synced,
+            # the PERFORMANCE_FETCH_STATUS_* sentinel). raw.get(...) returns
+            # None in every case that must be treated identically by the
+            # upsert's COALESCE logic: this workout predates issue #47 AC2
+            # entirely, it was skipped as older than the sync checkpoint, or
+            # the fetch was attempted but the workout genuinely has no HR
+            # monitor paired (effort_zones gives only per-zone durations and
+            # an effort-points score, never a plain avg/max bpm — see AC1
+            # above, a different, already-confirmed data source).
+            "avg_hr": raw.get("_avg_hr"),
+            "max_hr": raw.get("_max_hr"),
             # Derived, not directly reported: total_work (joules) / duration_s
             # (seconds) = watts. A legitimate physical derivation, not an
             # approximation — see docs/architecture/5-peloton-endpoint-field-mapping.md.
             "avg_power": avg_power,
-            # Genuinely unavailable from this endpoint — never fabricated
-            # from total_work or anything else.
-            "max_power": None,
+            # Issue #47, AC2: same read-only, never-derived treatment as
+            # avg_hr/max_hr above — never fabricated from total_work/avg_power.
+            "max_power": raw.get("_max_power"),
             "distance_m": distance_m,
             "calories": raw.get("calories"),
             "synced_at": datetime.now(timezone.utc).isoformat(),
@@ -806,6 +1074,17 @@ class PelotonConnector(Connector):
             "class_type": raw.get("_class_type"),
             "planned_duration_s": raw.get("_planned_duration_s"),
             "provider_class_id": raw.get("_provider_class_id"),
+            "hr_zone_1_s": hr_zone_seconds[1],
+            "hr_zone_2_s": hr_zone_seconds[2],
+            "hr_zone_3_s": hr_zone_seconds[3],
+            "hr_zone_4_s": hr_zone_seconds[4],
+            "hr_zone_5_s": hr_zone_seconds[5],
+            "effort_points": effort_points,
+            # Issue #47, AC2 / issue #57: shared "attempted this pass or
+            # not" marker for the one fetch_workout_performance() call —
+            # see Feature 3.8's module docstring for why this is not a
+            # Peloton-only hr_fetch_status column.
+            "performance_fetch_status": raw.get("_performance_fetch_status"),
             # Issue #58: same absence-is-meaningful contract as the 5
             # fields above — None for "not attempted this pass", a real
             # (possibly fractional) value for an attempted, successful

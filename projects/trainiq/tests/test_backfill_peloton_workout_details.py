@@ -1,7 +1,9 @@
 """
-Tests for scripts/backfill_peloton_class_metadata.py (issue #46, AC6;
-updated for issue #58's two-step peloton_id -> ride_id resolution,
-resolving BL-011).
+Tests for scripts/backfill_peloton_workout_details.py — issue #46's class
+metadata backfill (AC6), updated for issue #58's two-step peloton_id ->
+ride_id resolution (resolving BL-011), and renamed/extended by issue #47
+(AC2/AC4) to also backfill avg_hr/max_hr/max_power/performance_fetch_status
+through the same per-row, resumable mechanism.
 
 Fixture-based only, per this project's established live-verification
 boundary (CI has no access to the BO's real Peloton account) — builds its
@@ -18,15 +20,21 @@ from pathlib import Path
 
 import pytest
 
-from trainiq.connectors.peloton import CLASS_TYPE_LOOKUP_FAILED, CLASS_TYPE_NOT_A_CLASS, PROVIDER
+from trainiq.connectors.peloton import (
+    CLASS_TYPE_LOOKUP_FAILED,
+    CLASS_TYPE_NOT_A_CLASS,
+    PERFORMANCE_FETCH_STATUS_FAILED,
+    PERFORMANCE_FETCH_STATUS_OK,
+    PROVIDER,
+)
 from trainiq.storage.schema import open_db
 from trainiq.sync.engine import TransientError
 
-SCRIPT_PATH = Path(__file__).resolve().parent.parent / "scripts" / "backfill_peloton_class_metadata.py"
+SCRIPT_PATH = Path(__file__).resolve().parent.parent / "scripts" / "backfill_peloton_workout_details.py"
 
 
 def _load_script_module():
-    spec = importlib.util.spec_from_file_location("backfill_peloton_class_metadata", SCRIPT_PATH)
+    spec = importlib.util.spec_from_file_location("backfill_peloton_workout_details", SCRIPT_PATH)
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
@@ -75,18 +83,20 @@ def db(tmp_path: Path):
 
 class FakeConnector:
     """Stands in for PelotonConnector — scripted fetch_class_session()/
-    fetch_class_details() results, no network, no authenticate() needed.
-    Each step has its own independent call log and scripted
-    responses/failures, mirroring the two real network calls in the
-    two-step lookup (issue #58)."""
+    fetch_class_details()/fetch_workout_performance() results, no network,
+    no authenticate() needed. Each network call has its own independent
+    call log: `session_calls` (by peloton_id), `calls` (ride details, by
+    ride_id) and `performance_calls` (by workout external_id)."""
 
     def __init__(self):
         self.session_calls: list[str] = []
         self.calls: list[str] = []  # fetch_class_details() calls, by ride_id — kept for existing tests
+        self.performance_calls: list[str] = []
         self._session_responses: dict[str, dict | None] = {}
         self._responses: dict[str, object] = {}
         self._session_fail_times: dict[str, int] = {}
         self._call_count_before_success: dict[str, int] = {}
+        self._performance_responses: dict[str, dict | None] = {}
 
     def script_session_response(self, peloton_id: str, ride_id: str | None):
         """ride_id=None simulates a 404 at the session-resolution step."""
@@ -125,8 +135,27 @@ class FakeConnector:
             raise TransientError("peloton: rate limited (fake)", retry_after_s=0.01)
         return self._responses.get(ride_id)
 
+    def script_performance_response(self, external_id: str, performance: dict | None):
+        """Mirrors fetch_workout_performance()'s own real contract (see
+        peloton.py): None means "fetch failed, already logged" — the
+        script never sees a raw exception here, since the real method
+        always degrades internally (AC5)."""
+        self._performance_responses[external_id] = performance
 
-def _seed_row(conn, external_id: str, raw_payload: dict, class_type: str | None = None):
+    def fetch_workout_performance(self, external_id: str):
+        self.performance_calls.append(external_id)
+        return self._performance_responses.get(external_id)
+
+
+def _seed_row(
+    conn, external_id: str, raw_payload: dict,
+    class_type: str | None = None,
+    # Defaults to already-resolved so existing class-metadata-only tests
+    # don't incidentally also trigger a performance fetch they never
+    # script a response for — new tests below pass None explicitly to
+    # exercise that branch.
+    performance_fetch_status: str | None = "ok",
+):
     conn.execute(
         "INSERT INTO raw_activities (provider, external_id, payload_json, fetched_at) "
         "VALUES (?, ?, ?, ?)",
@@ -135,21 +164,27 @@ def _seed_row(conn, external_id: str, raw_payload: dict, class_type: str | None 
     conn.execute(
         """
         INSERT INTO normalized_activities
-            (provider, external_id, start_time, duration_s, discipline, source_confidence, class_type)
-        VALUES (?, ?, '2026-09-01T00:00:00+00:00', 300, 'cycling', 0.9, ?)
+            (provider, external_id, start_time, duration_s, discipline, source_confidence,
+             class_type, performance_fetch_status)
+        VALUES (?, ?, '2026-09-01T00:00:00+00:00', 300, 'cycling', 0.9, ?, ?)
         """,
-        (PROVIDER, external_id, class_type),
+        (PROVIDER, external_id, class_type, performance_fetch_status),
     )
     conn.commit()
 
 
-def _class_type_of(conn, external_id: str) -> str | None:
-    row = conn.execute(
-        "SELECT class_type FROM normalized_activities WHERE provider = ? AND external_id = ?",
+def _row_of(conn, external_id: str) -> dict:
+    return dict(conn.execute(
+        "SELECT * FROM normalized_activities WHERE provider = ? AND external_id = ?",
         (PROVIDER, external_id),
-    ).fetchone()
-    return row["class_type"] if row else None
+    ).fetchone())
 
+
+def _class_type_of(conn, external_id: str) -> str | None:
+    return _row_of(conn, external_id)["class_type"]
+
+
+# --- Issue #46: class metadata (unchanged behavior post-rename) ----------
 
 def _ride_details(title: str, duration: int, class_type_name: str = "Power Zone", difficulty_estimate: float | None = None):
     """A GET /api/ride/{ride_id}/details success body — live-evidence
@@ -175,10 +210,11 @@ def test_successful_run_processes_class_and_non_class_rows(db):
 
     counts = script.run_backfill(db, connector, sleep_fn=lambda _delay: None)
 
-    assert counts == {"processed": 2, "not_a_class": 1, "success": 1, "failed": 0}
-    row_w1 = dict(db.execute(
-        "SELECT * FROM normalized_activities WHERE provider = ? AND external_id = 'w1'", (PROVIDER,)
-    ).fetchone())
+    assert counts == {
+        "processed": 2, "not_a_class": 1, "success": 1, "failed": 0,
+        "performance_success": 0, "performance_failed": 0,
+    }
+    row_w1 = _row_of(db, "w1")
     assert row_w1["activity_title"] == "Power Zone Max"
     assert row_w1["instructor_name"] == "Matt Wilpers"
     assert row_w1["class_type"] == "Power Zone"
@@ -260,9 +296,7 @@ def test_resume_after_simulated_interruption_does_not_reprocess_completed_rows(d
     assert second_batch_counts["processed"] == 1
     assert connector.calls == ["ride-1", "ride-2"]  # ride-1 never re-fetched
 
-    row_w1 = dict(db.execute(
-        "SELECT * FROM normalized_activities WHERE provider = ? AND external_id = 'w1'", (PROVIDER,)
-    ).fetchone())
+    row_w1 = _row_of(db, "w1")
     assert row_w1["activity_title"] == "Power Zone"  # unchanged, not duplicated/altered
 
 
@@ -280,9 +314,7 @@ def test_retry_failed_flag_reattempts_previously_failed_rows(db):
     retry_counts = script.run_backfill(db, connector, retry_failed=True, sleep_fn=lambda _d: None)
     assert retry_counts["processed"] == 1
     assert retry_counts["success"] == 1
-    row_w1 = dict(db.execute(
-        "SELECT * FROM normalized_activities WHERE provider = ? AND external_id = 'w1'", (PROVIDER,)
-    ).fetchone())
+    row_w1 = _row_of(db, "w1")
     assert row_w1["activity_title"] == "Power Zone Max"
 
 
@@ -303,3 +335,110 @@ def test_cross_row_caching_two_rows_sharing_resolved_ride_id_cost_one_ride_detai
     assert counts["success"] == 2
     assert connector.session_calls == ["session-1", "session-2"]
     assert connector.calls == ["ride-1"]  # exactly one ride-details call for both rows
+
+
+# --- Issue #47, AC2/AC4: avg_hr/max_hr/max_power (new branch, independent
+# of the class-metadata branch above) --------------------------------
+
+def test_performance_backfill_populates_hr_and_power(db):
+    _seed_row(db, "w1", {"id": "w1", "workout_type": "ride"}, performance_fetch_status=None)
+    connector = FakeConnector()
+    connector.script_performance_response("w1", {"avg_hr": 135, "max_hr": 163, "max_power": 294})
+
+    counts = script.run_backfill(db, connector, sleep_fn=lambda _d: None)
+
+    assert counts["performance_success"] == 1
+    row_w1 = _row_of(db, "w1")
+    assert row_w1["avg_hr"] == 135
+    assert row_w1["max_hr"] == 163
+    assert row_w1["max_power"] == 294
+    assert row_w1["performance_fetch_status"] == PERFORMANCE_FETCH_STATUS_OK
+
+
+def test_performance_fetch_returning_none_is_recorded_as_failed(db):
+    """fetch_workout_performance() already degrades every non-auth
+    failure to None internally (AC5) — the script just records that
+    outcome, it does not retry the call itself a second time."""
+    _seed_row(db, "w1", {"id": "w1", "workout_type": "ride"}, performance_fetch_status=None)
+    connector = FakeConnector()
+    connector.script_performance_response("w1", None)
+
+    counts = script.run_backfill(db, connector, sleep_fn=lambda _d: None)
+
+    assert counts["performance_failed"] == 1
+    row_w1 = _row_of(db, "w1")
+    assert row_w1["avg_hr"] is None
+    assert row_w1["performance_fetch_status"] == PERFORMANCE_FETCH_STATUS_FAILED
+
+
+def test_performance_backfill_retry_failed_flag_reattempts(db):
+    # class_type is already resolved (CLASS_TYPE_NOT_A_CLASS) so only the
+    # performance concern is eligible here — isolates this test to the
+    # retry-failed behavior for AC2/AC4 specifically.
+    _seed_row(
+        db, "w1", {"id": "w1", "workout_type": "ride"},
+        class_type=CLASS_TYPE_NOT_A_CLASS, performance_fetch_status=PERFORMANCE_FETCH_STATUS_FAILED,
+    )
+    connector = FakeConnector()
+    connector.script_performance_response("w1", {"avg_hr": 135, "max_hr": 163, "max_power": 294})
+
+    plain_run_counts = script.run_backfill(db, connector, sleep_fn=lambda _d: None)
+    assert plain_run_counts["processed"] == 0
+    assert connector.performance_calls == []
+
+    retry_counts = script.run_backfill(db, connector, retry_failed=True, sleep_fn=lambda _d: None)
+    assert retry_counts["processed"] == 1
+    assert retry_counts["performance_success"] == 1
+    assert _row_of(db, "w1")["avg_hr"] == 135
+
+
+def test_row_missing_both_concerns_resolves_both_independently_in_one_pass(db):
+    """A row missing class metadata AND HR/power is resolved for both in
+    the same pass — the two branches don't block each other."""
+    _seed_row(db, "w1", {"id": "w1", "workout_type": "class", "peloton_id": "ride-1"}, performance_fetch_status=None)
+    connector = FakeConnector()
+    connector.script_response("ride-1", _ride_details("Power Zone Max", 2700))
+    connector.script_performance_response("w1", {"avg_hr": 135, "max_hr": 163, "max_power": 294})
+
+    counts = script.run_backfill(db, connector, sleep_fn=lambda _d: None)
+
+    assert counts["processed"] == 1
+    assert counts["success"] == 1
+    assert counts["performance_success"] == 1
+    row_w1 = _row_of(db, "w1")
+    assert row_w1["activity_title"] == "Power Zone Max"
+    assert row_w1["avg_hr"] == 135
+
+
+def test_row_missing_only_performance_does_not_refetch_already_resolved_class_metadata(db):
+    """A row whose class metadata is already resolved (class_type set,
+    not a failure) must not trigger a second class-detail fetch just
+    because its performance concern is still missing."""
+    _seed_row(
+        db, "w1", {"id": "w1", "workout_type": "class", "peloton_id": "ride-1"},
+        class_type="power_zone_max", performance_fetch_status=None,
+    )
+    connector = FakeConnector()
+    connector.script_performance_response("w1", {"avg_hr": 135, "max_hr": 163, "max_power": 294})
+
+    counts = script.run_backfill(db, connector, sleep_fn=lambda _d: None)
+
+    assert connector.calls == []  # class metadata untouched, already resolved
+    assert counts["performance_success"] == 1
+    assert _row_of(db, "w1")["class_type"] == "power_zone_max"  # unchanged
+
+
+def test_resume_after_interruption_does_not_reprocess_completed_performance_rows(db):
+    _seed_row(db, "w1", {"id": "w1", "workout_type": "ride"}, performance_fetch_status=None)
+    _seed_row(db, "w2", {"id": "w2", "workout_type": "ride"}, performance_fetch_status=None)
+    connector = FakeConnector()
+    connector.script_performance_response("w1", {"avg_hr": 100, "max_hr": 120, "max_power": 200})
+    connector.script_performance_response("w2", {"avg_hr": 110, "max_hr": 130, "max_power": 210})
+
+    first_batch_counts = script.run_backfill(db, connector, limit=1, sleep_fn=lambda _d: None)
+    assert first_batch_counts["processed"] == 1
+    assert connector.performance_calls == ["w1"]
+
+    second_batch_counts = script.run_backfill(db, connector, sleep_fn=lambda _d: None)
+    assert second_batch_counts["processed"] == 1
+    assert connector.performance_calls == ["w1", "w2"]  # w1 never re-fetched
