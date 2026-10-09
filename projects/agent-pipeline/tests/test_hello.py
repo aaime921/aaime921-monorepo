@@ -41,6 +41,17 @@ class TestGreet(unittest.TestCase):
         result = greet("Alice")
         self.assertRegex(result, rf"^Hello Alice! \[{TIMESTAMP_RE}\]$")
 
+    def test_greet_no_timestamp_with_name(self):
+        self.assertEqual(greet("Alice", timestamp=False), "Hello Alice!")
+
+    def test_greet_no_timestamp_without_name(self):
+        self.assertEqual(greet(None, timestamp=False), "Hello world!")
+
+    def test_greet_no_timestamp_shout(self):
+        self.assertEqual(
+            greet(None, shout=True, timestamp=False), "HELLO WORLD!"
+        )
+
 
 class TestCli(unittest.TestCase):
     def test_cli_with_name(self):
@@ -78,6 +89,51 @@ class TestCli(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0)
         self.assertRegex(result.stdout, rf"^HELLO WORLD! \[{TIMESTAMP_RE}\]\n$")
+
+    def test_cli_no_timestamp_with_name(self):
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), "--no-timestamp", "Alice"],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "Hello Alice!\n")
+
+    def test_cli_no_timestamp_without_name(self):
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), "--no-timestamp"],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "Hello world!\n")
+
+    def test_cli_no_timestamp_then_shout(self):
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), "--no-timestamp", "--shout"],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "HELLO WORLD!\n")
+
+    def test_cli_shout_then_no_timestamp(self):
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), "--shout", "--no-timestamp"],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "HELLO WORLD!\n")
+
+    def test_cli_help_lists_no_timestamp(self):
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), "--help"],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("--no-timestamp", result.stdout)
 
 
 if __name__ == "__main__":

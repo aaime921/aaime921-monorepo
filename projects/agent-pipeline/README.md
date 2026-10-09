@@ -34,6 +34,11 @@ if no name is given, with the current timestamp.
 Pass `--shout` to print the greeting in all caps, e.g.
 `python3 src/hello.py --shout Alice` prints `HELLO ALICE! [YYYY-MM-DD HH:MM:SS]`.
 
+Pass `--no-timestamp` to omit the trailing timestamp, e.g.
+`python3 src/hello.py --no-timestamp Alice` prints `Hello Alice!`. Combine with
+`--shout` in either order, e.g. `python3 src/hello.py --shout --no-timestamp`
+prints `HELLO WORLD!`.
+
 Test:
 
 ```sh
