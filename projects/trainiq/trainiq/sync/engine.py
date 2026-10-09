@@ -144,13 +144,15 @@ def upsert_normalized_activity(conn: sqlite3.Connection, record: dict) -> str:
         INSERT OR IGNORE INTO normalized_activities
             (provider, external_id, start_time, duration_s, discipline, distance_m,
              avg_hr, max_hr, avg_power, max_power, calories,
+             elevation_gain_m, moving_time_s, is_indoor,
              training_load, training_load_method, source_confidence)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             record["provider"], record["external_id"], record["start_time"], record["duration_s"],
             record["discipline"], record["distance_m"], record["avg_hr"], record["max_hr"],
             record["avg_power"], record["max_power"], record["calories"],
+            record["elevation_gain_m"], record["moving_time_s"], record["is_indoor"],
             record["training_load"], record["training_load_method"], record["source_confidence"],
         ),
     )
@@ -162,13 +164,15 @@ def upsert_normalized_activity(conn: sqlite3.Connection, record: dict) -> str:
         UPDATE normalized_activities SET
             start_time = ?, duration_s = ?, discipline = ?, distance_m = ?,
             avg_hr = ?, max_hr = ?, avg_power = ?, max_power = ?, calories = ?,
+            elevation_gain_m = ?, moving_time_s = ?, is_indoor = ?,
             training_load = ?, training_load_method = ?, source_confidence = ?
         WHERE provider = ? AND external_id = ?
         """,
         (
             record["start_time"], record["duration_s"], record["discipline"], record["distance_m"],
             record["avg_hr"], record["max_hr"], record["avg_power"], record["max_power"],
-            record["calories"], record["training_load"], record["training_load_method"],
+            record["calories"], record["elevation_gain_m"], record["moving_time_s"], record["is_indoor"],
+            record["training_load"], record["training_load_method"],
             record["source_confidence"], record["provider"], record["external_id"],
         ),
     )

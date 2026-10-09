@@ -64,6 +64,12 @@ def _build_activity_record(
         "avg_power": normalized.get("avg_power"),
         "max_power": normalized.get("max_power"),
         "calories": normalized.get("calories"),
+        # Issue #48: plain pass-through, same pattern as distance_m/avg_hr
+        # above — no new derived logic, no taxonomy, no confidence-scoring
+        # involvement (see Risks/tradeoffs).
+        "elevation_gain_m": normalized.get("elevation_gain_m"),
+        "moving_time_s": normalized.get("moving_time_s"),
+        "is_indoor": normalized.get("is_indoor"),
         "training_load": load_result.load,
         "training_load_method": load_result.method.value,
         "source_confidence": confidence,

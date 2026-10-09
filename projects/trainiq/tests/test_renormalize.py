@@ -209,6 +209,52 @@ def test_renormalize_unknown_provider_reads_zero_rows(db, connector):
     assert result.updated == 0
 
 
+# --- Issue #48: elevation gain, moving time, indoor/outdoor flag -----------
+
+def test_renormalize_backfills_elevation_moving_time_indoor_from_stored_raw_payload(db, connector):
+    """AC4's proof, end-to-end through renormalize_provider() (not just
+    normalize() in isolation): a strava_unofficial raw_activities row
+    already carries elevation_gain_raw/moving_time_raw/trainer today, so a
+    renormalize pass alone (no re-fetch) must populate the three new
+    normalized_activities columns from that already-stored payload."""
+    payload = {
+        **_raw_payload(99, "Ride", "Ride"),
+        "moving_time_raw": 2800,
+        "elapsed_time_raw": 3000,
+        "elevation_gain_raw": 80.0,
+        "trainer": False,
+    }
+    db.execute(
+        "INSERT INTO raw_activities (provider, external_id, payload_json, fetched_at) "
+        "VALUES (?, ?, ?, ?)",
+        (PROVIDER, "99", json.dumps(payload), "2026-10-06T00:00:00+00:00"),
+    )
+    db.execute(
+        """
+        INSERT INTO normalized_activities
+            (provider, external_id, start_time, duration_s, discipline, distance_m,
+             avg_hr, max_hr, avg_power, max_power, calories,
+             training_load, training_load_method, source_confidence)
+        VALUES (?, '99', ?, 3000, 'other', 10000.0, NULL, NULL, NULL, NULL, NULL, NULL, 'unknown', 0.5)
+        """,
+        (PROVIDER, datetime(2026, 1, 5, 7, 0, 0, tzinfo=timezone.utc).isoformat()),
+    )
+    db.commit()
+
+    result = renormalize_provider(db, PROVIDER, connector)
+    db.commit()
+
+    assert result.updated == 1
+    row = db.execute(
+        "SELECT elevation_gain_m, moving_time_s, is_indoor FROM normalized_activities "
+        "WHERE provider = ? AND external_id = '99'",
+        (PROVIDER,),
+    ).fetchone()
+    assert row["elevation_gain_m"] == 80.0
+    assert row["moving_time_s"] == 2800
+    assert row["is_indoor"] == 0  # False, stored as SQLite INTEGER
+
+
 # --- Issue #45: raw_transform, used by scripts/renormalize_peloton_distance.py ---
 
 class _FakeConnector:

@@ -311,10 +311,7 @@ class StravaUnofficialConnector(Connector):
           - elapsed_time_raw / moving_time_raw: seconds (int). `duration_s`
             uses elapsed_time_raw specifically, for parity with the REST
             connector's `elapsed_time` (total elapsed, not moving-only).
-          - elevation_gain_raw: meters (float) — has no home in the current
-            canonical shape, so it is read nowhere (not fabricated into an
-            existing field, not silently dropped as an error either — just
-            genuinely out of this issue's scope).
+          - elevation_gain_raw: meters (float).
         """
         return {
             "provider": PROVIDER,
@@ -332,6 +329,11 @@ class StravaUnofficialConnector(Connector):
             "max_power": None,
             "distance_m": raw.get("distance_raw"),
             "calories": None,
+            # Issue #48. .get() everywhere, never raw[...]: a missing source
+            # field must stay None, never fabricated/defaulted (AC3).
+            "elevation_gain_m": raw.get("elevation_gain_raw"),
+            "moving_time_s": raw.get("moving_time_raw"),
+            "is_indoor": raw.get("trainer"),
             "synced_at": datetime.now(timezone.utc).isoformat(),
         }
 

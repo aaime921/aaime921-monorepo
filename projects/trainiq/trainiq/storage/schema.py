@@ -25,7 +25,7 @@ from pathlib import Path
 
 from trainiq.storage.backfill import backfill_weigh_in_plausibility, decouple_weigh_in_plausibility
 
-CURRENT_SCHEMA_VERSION = 5
+CURRENT_SCHEMA_VERSION = 6
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -161,6 +161,16 @@ _MIGRATIONS: dict[int, str] = {
         ALTER TABLE weigh_ins RENAME COLUMN plausibility_reason TO weight_plausibility_reason;
         ALTER TABLE weigh_ins ADD COLUMN is_body_fat_flagged_implausible INTEGER NOT NULL DEFAULT 0;
         ALTER TABLE weigh_ins ADD COLUMN body_fat_plausibility_reason TEXT;
+    """,
+    # Issue #48: elevation gain, moving time, indoor/outdoor flag for
+    # Strava activities. Nullable, no default — "missing" and "confirmed
+    # outdoor/zero-elevation" are different facts (AC3); ADD COLUMN with
+    # no NOT NULL/DEFAULT backfills existing rows with NULL, which is
+    # correct for them regardless (their raw payloads predate this fix).
+    6: """
+        ALTER TABLE normalized_activities ADD COLUMN elevation_gain_m REAL;
+        ALTER TABLE normalized_activities ADD COLUMN moving_time_s INTEGER;
+        ALTER TABLE normalized_activities ADD COLUMN is_indoor INTEGER;
     """,
 }
 
