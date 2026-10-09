@@ -569,6 +569,30 @@ def test_normalize_maps_web_payload_fields_to_canonical_shape(credential_store):
     assert result["avg_power"] is None
     assert result["max_power"] is None
     assert result["calories"] is None
+    # Issue #46 (AC3): raw name/sport_type persisted independent of any
+    # Peloton link.
+    assert result["activity_title"] == "Morning Ride"
+    assert result["sport_type_raw"] == "Ride"
+
+
+def test_normalize_activity_title_is_none_when_name_absent(credential_store):
+    fake = FakeStravaUnofficialSession()
+    connector = StravaUnofficialConnector(credential_store, session=fake)
+    raw = {**_WEB_ACTIVITY_RECORD, "name": None}
+
+    result = connector.normalize(raw)
+
+    assert result["activity_title"] is None
+
+
+def test_normalize_sport_type_raw_falls_back_to_display_type(credential_store):
+    fake = FakeStravaUnofficialSession()
+    connector = StravaUnofficialConnector(credential_store, session=fake)
+    raw = {**_WEB_ACTIVITY_RECORD, "activity_type_display_name": None, "display_type": "Run"}
+
+    result = connector.normalize(raw)
+
+    assert result["sport_type_raw"] == "Run"
 
 
 # --- Issue #48: elevation gain, moving time, indoor/outdoor flag -----------

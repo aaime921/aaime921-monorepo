@@ -224,7 +224,9 @@ def test_v2_to_v3_migration_preserves_existing_data(tmp_path):
     # Simulate "was already at v2" by manually rolling schema_version back
     # and undoing everything v3+ added, then re-migrating. weigh_ins must
     # also be rolled back to its pre-v4 shape (ADR-039), and
-    # normalized_activities to its pre-v6 shape (issue #48) — otherwise
+    # normalized_activities to its pre-v6 shape (issue #46, which also
+    # subsumes issue #48's v7 columns since both are added via ADD COLUMN
+    # on top of the v2-era table created below) — otherwise
     # re-running those migration scripts below would try to add columns
     # that already exist.
     conn = sqlite3.connect(db_path)
@@ -530,7 +532,7 @@ def test_v4_to_v5_backfill_reproduces_bo_evidence_exactly(tmp_path):
 
 # --- Issue #48: elevation gain, moving time, indoor/outdoor flag -----------
 
-def test_v6_migration_adds_elevation_moving_time_indoor_columns(tmp_path):
+def test_v7_migration_adds_elevation_moving_time_indoor_columns(tmp_path):
     db_path = tmp_path / "trainiq.db"
     version = schema.migrate(db_path)
     assert version == schema.CURRENT_SCHEMA_VERSION
@@ -541,7 +543,7 @@ def test_v6_migration_adds_elevation_moving_time_indoor_columns(tmp_path):
     assert {"elevation_gain_m", "moving_time_s", "is_indoor"} <= columns
 
 
-def test_v6_migration_leaves_pre_existing_rows_null_not_false_or_zero(tmp_path):
+def test_v7_migration_leaves_pre_existing_rows_null_not_false_or_zero(tmp_path):
     """Direct proof of AC3 at the schema layer, independent of any
     connector: a row that existed before this migration must read back
     NULL for all three new columns, never a fabricated 0/False default —

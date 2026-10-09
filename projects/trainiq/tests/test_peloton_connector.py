@@ -16,6 +16,8 @@ import pytest
 
 from trainiq.connectors.base import ConnectorState
 from trainiq.connectors.peloton import (
+    CLASS_TYPE_LOOKUP_FAILED,
+    CLASS_TYPE_NOT_A_CLASS,
     CRED_EMAIL,
     CRED_MANUAL_BEARER_TOKEN,
     CRED_OAUTH_ACCESS_TOKEN,
@@ -26,9 +28,12 @@ from trainiq.connectors.peloton import (
     CRED_SESSION_ID,
     OAUTH_TOKEN_URL,
     PROVIDER,
+    RIDE_ID_FIELD,
+    WORKOUT_TYPE_FIELD,
     PelotonConnector,
     PelotonHTTPError,
     PelotonOAuthRejected,
+    apply_class_metadata_update,
     generate_pkce_pair,
 )
 from trainiq.credentials.store import CredentialStore
@@ -426,7 +431,12 @@ def test_download_does_not_forward_since_as_a_query_param(credential_store):
     connector = PelotonConnector(credential_store, session=fake)
     connector.authenticate()
 
-    connector.download(since="2026-01-01T00:00:00+00:00")
+    # Issue #46: `since` is now also parsed as an epoch int (to decide
+    # whether a class workout's detail fetch is worth attempting) — a
+    # realistic checkpoint value, matching what extract_resume_cursor()
+    # actually produces (str(start_time), a raw epoch int), not an ISO
+    # date string.
+    connector.download(since="1767225600")
 
     assert "after" not in fake.get_calls[1]["params"]
     assert "since" not in fake.get_calls[1]["params"]
@@ -444,7 +454,9 @@ def test_download_fetches_user_id_then_paginated_workouts(credential_store):
 
     workouts = connector.download()
 
-    assert workouts == [{"id": "w1", "_distance_unit": None}]
+    # Issue #46: every workout gets a _class_type attached — "not_a_class"
+    # here since this fixture has neither workout_type nor peloton_id.
+    assert workouts == [{"id": "w1", "_distance_unit": None, "_class_type": "not_a_class"}]
     assert fake.get_calls[0]["url"] == "https://api.onepeloton.com/api/me"
     assert fake.get_calls[1]["url"] == "https://api.onepeloton.com/api/user/u1/workouts"
     assert fake.get_calls[1]["params"] == {"page": 0}
@@ -463,7 +475,10 @@ def test_download_walks_all_pages_until_show_next_is_falsy(credential_store):
 
     workouts = connector.download()
 
-    assert workouts == [{"id": "w1", "_distance_unit": None}, {"id": "w2", "_distance_unit": None}]
+    assert workouts == [
+        {"id": "w1", "_distance_unit": None, "_class_type": "not_a_class"},
+        {"id": "w2", "_distance_unit": None, "_class_type": "not_a_class"},
+    ]
     assert fake.get_calls[1]["params"] == {"page": 0}
     assert fake.get_calls[2]["params"] == {"page": 1}
 
@@ -487,9 +502,9 @@ def test_download_walks_three_pages_not_just_a_hardcoded_two(credential_store):
     workouts = connector.download()
 
     assert workouts == [
-        {"id": "w1", "_distance_unit": None},
-        {"id": "w2", "_distance_unit": None},
-        {"id": "w3", "_distance_unit": None},
+        {"id": "w1", "_distance_unit": None, "_class_type": "not_a_class"},
+        {"id": "w2", "_distance_unit": None, "_class_type": "not_a_class"},
+        {"id": "w3", "_distance_unit": None, "_class_type": "not_a_class"},
     ]
     assert fake.get_calls[1]["params"] == {"page": 0}
     assert fake.get_calls[2]["params"] == {"page": 1}
@@ -513,8 +528,8 @@ def test_download_resolves_recognized_account_unit_and_attaches_to_every_workout
     workouts = connector.download()
 
     assert workouts == [
-        {"id": "w1", "_distance_unit": "mi"},
-        {"id": "w2", "_distance_unit": "mi"},
+        {"id": "w1", "_distance_unit": "mi", "_class_type": "not_a_class"},
+        {"id": "w2", "_distance_unit": "mi", "_class_type": "not_a_class"},
     ]
 
 
@@ -533,7 +548,7 @@ def test_download_missing_account_unit_field_attaches_none_not_omitted(credentia
 
     workouts = connector.download()
 
-    assert workouts == [{"id": "w1", "_distance_unit": None}]
+    assert workouts == [{"id": "w1", "_distance_unit": None, "_class_type": "not_a_class"}]
 
 
 def test_download_rate_limited_honors_retry_after(credential_store):
@@ -810,6 +825,236 @@ def test_normalize_no_distance_at_all_yields_none_without_warning(credential_sto
 
     assert result["distance_m"] is None
     assert log_stream.getvalue() == ""
+
+
+# --- Issue #46: class title/instructor/class type/planned length --------
+
+def test_normalize_class_workout_with_full_metadata(credential_store):
+    fake = FakePelotonSession()
+    connector = PelotonConnector(credential_store, session=fake)
+    raw = {
+        "id": 10, "start_time": 1790014244, "end_time": 1790014543,
+        "fitness_discipline": "cycling", "total_work": 23646.98, "calories": 30.64,
+        "_class_title": "Power Zone Max", "_instructor_name": "Matt Wilpers",
+        "_class_type": "power_zone_max", "_planned_duration_s": 2700,
+        "_provider_class_id": "ride-abc",
+    }
+
+    result = connector.normalize(raw)
+
+    assert result["activity_title"] == "Power Zone Max"
+    assert result["instructor_name"] == "Matt Wilpers"
+    assert result["class_type"] == "power_zone_max"
+    assert result["planned_duration_s"] == 2700
+    assert result["provider_class_id"] == "ride-abc"
+    assert result["duration_s"] == 299  # actual duration unaffected (AC1)
+
+
+def test_normalize_non_class_workout_has_sentinel_and_no_instructor(credential_store):
+    fake = FakePelotonSession()
+    connector = PelotonConnector(credential_store, session=fake)
+    raw = {
+        "id": 11, "start_time": 1790014244, "end_time": 1790014543,
+        "fitness_discipline": "cycling", "_class_type": CLASS_TYPE_NOT_A_CLASS,
+    }
+
+    result = connector.normalize(raw)
+
+    assert result["class_type"] == CLASS_TYPE_NOT_A_CLASS
+    assert result["instructor_name"] is None
+    assert result["activity_title"] is None
+
+
+def test_normalize_class_workout_with_failed_lookup(credential_store):
+    fake = FakePelotonSession()
+    connector = PelotonConnector(credential_store, session=fake)
+    raw = {
+        "id": 12, "start_time": 1790014244, "end_time": 1790014543,
+        "fitness_discipline": "cycling", "_class_type": CLASS_TYPE_LOOKUP_FAILED,
+    }
+
+    result = connector.normalize(raw)
+
+    assert result["class_type"] == CLASS_TYPE_LOOKUP_FAILED
+    assert result["instructor_name"] is None
+
+
+def test_normalize_workout_with_no_class_keys_at_all_yields_none_for_every_new_field(credential_store):
+    """The "not attempted this pass" case: a workout that predates issue
+    #46's download() entirely, or was skipped as older than the sync
+    checkpoint. COALESCE in upsert_normalized_activity() depends on this."""
+    fake = FakePelotonSession()
+    connector = PelotonConnector(credential_store, session=fake)
+    raw = {
+        "id": 13, "start_time": 1790014244, "end_time": 1790014543,
+        "fitness_discipline": "cycling",
+    }
+
+    result = connector.normalize(raw)
+
+    assert result["activity_title"] is None
+    assert result["instructor_name"] is None
+    assert result["class_type"] is None
+    assert result["planned_duration_s"] is None
+    assert result["provider_class_id"] is None
+
+
+def _me_and_workouts_responses(workouts: list[dict]):
+    """Scripts a successful /api/me + single-page /workouts sequence onto
+    a fresh FakePelotonSession, authenticated via automated login."""
+    fake = FakePelotonSession()
+    fake.script_post_response(_login_success_response())
+    fake.script_get_response(FakeResponse(200, {"id": "u1"}))
+    fake.script_get_response(FakeResponse(200, {"data": workouts, "show_next": False}))
+    return fake
+
+
+def _authenticated_connector(credential_store, fake):
+    credential_store.set(PROVIDER, CRED_EMAIL, "a@b.com")
+    credential_store.set(PROVIDER, CRED_PASSWORD, "pw")
+    connector = PelotonConnector(credential_store, session=fake)
+    connector.authenticate()
+    return connector
+
+
+def test_download_two_workouts_sharing_ride_id_fetches_class_details_once(credential_store):
+    workouts = [
+        {"id": "w1", WORKOUT_TYPE_FIELD: "class", RIDE_ID_FIELD: "ride-1", "start_time": 2000},
+        {"id": "w2", WORKOUT_TYPE_FIELD: "class", RIDE_ID_FIELD: "ride-1", "start_time": 3000},
+    ]
+    fake = _me_and_workouts_responses(workouts)
+    fake.script_get_response(FakeResponse(200, {"title": "Power Zone Max", "duration": 2700}))
+    connector = _authenticated_connector(credential_store, fake)
+
+    result = connector.download(since="1000")
+
+    assert len(fake.get_calls) == 3  # /me, /workouts, exactly one ride-detail call
+    assert result[0]["_class_title"] == "Power Zone Max"
+    assert result[1]["_class_title"] == "Power Zone Max"
+    assert result[0]["_provider_class_id"] == "ride-1"
+
+
+def test_download_class_workout_older_than_since_is_not_fetched(credential_store):
+    workouts = [{"id": "w1", WORKOUT_TYPE_FIELD: "class", RIDE_ID_FIELD: "ride-1", "start_time": 500}]
+    fake = _me_and_workouts_responses(workouts)
+    connector = _authenticated_connector(credential_store, fake)
+
+    result = connector.download(since="1000")
+
+    assert len(fake.get_calls) == 2  # /me, /workouts — no ride-detail call at all
+    assert "_class_type" not in result[0]
+    assert "_class_title" not in result[0]
+
+
+def test_download_class_workout_with_since_none_is_always_attempted(credential_store):
+    workouts = [{"id": "w1", WORKOUT_TYPE_FIELD: "class", RIDE_ID_FIELD: "ride-1", "start_time": 500}]
+    fake = _me_and_workouts_responses(workouts)
+    fake.script_get_response(FakeResponse(200, {"title": "Endurance", "duration": 1800}))
+    connector = _authenticated_connector(credential_store, fake)
+
+    result = connector.download(since=None)
+
+    assert len(fake.get_calls) == 3
+    assert result[0]["_class_title"] == "Endurance"
+
+
+def test_download_class_lookup_404_sets_lookup_failed_and_logs(credential_store):
+    """Loguru, not stdlib logging — caplog doesn't capture it (see
+    test_sync_engine.py's test_connector_declaring_no_incremental_support_logs_explanatory_note
+    for the established pattern this follows)."""
+    import io
+    from loguru import logger
+
+    workouts = [{"id": "w1", WORKOUT_TYPE_FIELD: "class", RIDE_ID_FIELD: "ride-1", "start_time": 2000}]
+    fake = _me_and_workouts_responses(workouts)
+    fake.script_get_response(FakeResponse(404, {}))
+    connector = _authenticated_connector(credential_store, fake)
+
+    log_stream = io.StringIO()
+    handler_id = logger.add(log_stream, format="{message}")
+    try:
+        result = connector.download(since="1000")
+    finally:
+        logger.remove(handler_id)
+
+    assert result[0]["_class_type"] == CLASS_TYPE_LOOKUP_FAILED
+    assert "class lookup failed" in log_stream.getvalue()
+
+
+def test_download_class_lookup_rate_limited_propagates_transient_error(credential_store):
+    workouts = [{"id": "w1", WORKOUT_TYPE_FIELD: "class", RIDE_ID_FIELD: "ride-1", "start_time": 2000}]
+    fake = _me_and_workouts_responses(workouts)
+    fake.script_get_response(FakeResponse(429, {}, headers={"Retry-After": "30"}))
+    connector = _authenticated_connector(credential_store, fake)
+
+    with pytest.raises(TransientError) as excinfo:
+        connector.download(since="1000")
+    assert excinfo.value.retry_after_s == 30.0
+
+
+def test_download_non_class_workout_gets_not_a_class_sentinel_no_network_call(credential_store):
+    workouts = [{"id": "w1", "start_time": 2000}]  # no workout_type, no peloton_id at all
+    fake = _me_and_workouts_responses(workouts)
+    connector = _authenticated_connector(credential_store, fake)
+
+    result = connector.download(since="1000")
+
+    assert result[0]["_class_type"] == CLASS_TYPE_NOT_A_CLASS
+    assert len(fake.get_calls) == 2  # no ride-detail call
+
+
+# --- Issue #46: apply_class_metadata_update() --------------------------
+
+def test_apply_class_metadata_update_sets_only_the_five_columns(db):
+    db.execute(
+        """
+        INSERT INTO normalized_activities
+            (provider, external_id, start_time, duration_s, discipline, source_confidence)
+        VALUES ('peloton', 'ext-1', '2026-01-01T00:00:00+00:00', 300, 'cycling', 0.9)
+        """
+    )
+    db.commit()
+
+    apply_class_metadata_update(
+        db, "ext-1",
+        {
+            "activity_title": "Power Zone Max", "instructor_name": "Matt Wilpers",
+            "class_type": "power_zone_max", "planned_duration_s": 2700, "provider_class_id": "ride-1",
+        },
+    )
+    db.commit()
+
+    row = dict(db.execute(
+        "SELECT * FROM normalized_activities WHERE provider = 'peloton' AND external_id = 'ext-1'"
+    ).fetchone())
+    assert row["activity_title"] == "Power Zone Max"
+    assert row["instructor_name"] == "Matt Wilpers"
+    assert row["class_type"] == "power_zone_max"
+    assert row["planned_duration_s"] == 2700
+    assert row["provider_class_id"] == "ride-1"
+    assert row["discipline"] == "cycling"  # untouched
+
+
+def test_apply_class_metadata_update_scoped_to_peloton_provider_only(db):
+    """Must not touch a same-external_id row belonging to a different
+    provider — the WHERE clause filters on provider = 'peloton' explicitly,
+    not just external_id."""
+    db.execute(
+        """
+        INSERT INTO normalized_activities
+            (provider, external_id, start_time, duration_s, discipline, source_confidence)
+        VALUES ('strava', 'ext-1', '2026-01-01T00:00:00+00:00', 300, 'cycling', 0.9)
+        """
+    )
+    db.commit()
+
+    apply_class_metadata_update(db, "ext-1", {"activity_title": "Should not apply"})
+    db.commit()
+
+    row = dict(db.execute(
+        "SELECT * FROM normalized_activities WHERE provider = 'strava' AND external_id = 'ext-1'"
+    ).fetchone())
+    assert row["activity_title"] is None
 
 
 # --- Issue #33: extract_resume_cursor() must always return a str --------
