@@ -10,6 +10,8 @@ small SQLite DB via open_db(), never touches APP_SUPPORT_DIR/trainiq.db.
 from __future__ import annotations
 
 import json
+import runpy
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -19,6 +21,8 @@ from trainiq.connectors.strava_unofficial import PROVIDER, StravaUnofficialConne
 from trainiq.credentials.store import CredentialStore
 from trainiq.normalization.renormalize import renormalize_provider
 from trainiq.storage.schema import open_db
+
+SCRIPT_PATH = Path(__file__).resolve().parent.parent / "scripts" / "renormalize_strava_unofficial.py"
 
 
 @pytest.fixture(autouse=True)
@@ -260,3 +264,37 @@ def test_renormalize_corrects_bst_shifted_start_time(db, connector):
         (PROVIDER, "99"),
     ).fetchone()
     assert raw_row["payload_json"] == payload_json
+
+
+# --- Console noise (AC1/AC6, issue #44) ------------------------------------
+
+class _StopAfterConfigure(Exception):
+    """Raised by the fake configure() below to short-circuit the script
+    before it opens a real database — this test only needs to confirm the
+    call happens, and happens first, not exercise the rest of main()."""
+
+
+def test_renormalize_script_calls_logging_setup_configure_first(monkeypatch, tmp_path):
+    """Structural guarantee behind AC1/AC6: without this call, loguru's
+    default stderr handler stays active and every per-record diagnostic
+    message (e.g. "training_load unknown") floods the console. Asserts
+    the script's main() calls trainiq.logging_setup.configure() as its
+    first action, before the real DB open."""
+    import trainiq.logging_setup as logging_setup_module
+
+    calls: list[Path] = []
+
+    def _fake_configure(log_dir):
+        calls.append(log_dir)
+        raise _StopAfterConfigure()
+
+    monkeypatch.setattr(logging_setup_module, "configure", _fake_configure)
+    monkeypatch.setattr(sys, "argv", [
+        "renormalize_strava_unofficial.py",
+        "--db-path", str(tmp_path / "trainiq.db"),
+    ])
+
+    with pytest.raises(_StopAfterConfigure):
+        runpy.run_path(str(SCRIPT_PATH), run_name="__main__")
+
+    assert calls == [logging_setup_module.DEFAULT_LOG_DIR]

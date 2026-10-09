@@ -11,6 +11,8 @@ from pathlib import Path
 
 from loguru import logger
 
+DEFAULT_LOG_DIR = Path.home() / "Library" / "Logs" / "TrainIQ"
+
 _configured = False
 
 

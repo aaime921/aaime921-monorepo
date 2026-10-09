@@ -62,3 +62,34 @@ Eufy's `supports_incremental_sync = False` means every sync reprocesses full his
 - The rolling baseline is shared across providers (not filtered by provider) — the median is of the athlete's weight, not of one device's readings. If a second weigh-in source is ever added, a systematic calibration difference between two scales (not just noise) could make one provider's otherwise-normal readings look like outliers relative to a blended median. Not a concern today (only Eufy exists), flagged here for whoever adds the next one.
 - `weigh_ins` has no `source_confidence` column (BL-009, still open and unrelated to this migration — see `BACKLOG.md`).
 - Threshold values are revisit-able with more data; this ADR is the record of what was chosen and why, so a future change is a deliberate revision, not an unexplained drift.
+
+## Correction (Issue #42)
+
+After this rule went live on the BO's database, the first sync flagged 130 of 568 stored Eufy weigh-ins as implausible — but only the original 7 sub-40 kg readings were genuinely bad. The other 123 were valid 81–88 kg readings that Eufy recorded with `body_fat_pct = 0.0` because the scale didn't get an impedance reading that time (e.g. weighed with socks on), not because the athlete's body fat is actually ~0%. Two independent defects caused this, fixed at the two layers where they were introduced:
+
+1. **Missing-vs-zero, at the connector layer.** `EufyConnector.normalize()` had no way to distinguish "measured as 0" from "not measured" — it passed Eufy's `body_fat_pct`/`muscle_mass_pct` sentinel value of `0.0` straight through as a literal reading. BO-confirmed against live production data: a literal `0` on either field means "not measured," the same sentinel pattern Issue #1 already found and fixed for `weight`'s deci-kilogram scaling. `normalize()` now maps a literal `0` on `body_fat_pct`/`muscle_mass_pct` to `None` before either value reaches persistence or the plausibility rule.
+
+2. **One combined verdict, at the rule layer.** Even with defect 1 fixed, `evaluate_weigh_in_plausibility()`'s original shape returned a single `is_plausible`/`reason` verdict that conflated two independent questions — "is this body-fat reading physiologically plausible?" and "is this weight reading plausible?" — so tripping the body-fat floor suppressed the weight-deviation axis's (already-correct) verdict on the weight itself. A future non-zero-but-below-floor body-fat reading (e.g. `1.5`) would still have wrongly excluded a perfectly good weight reading even with defect 1 fixed. Both fixes were required.
+
+### What changed
+
+- `evaluate_weigh_in_plausibility()` now returns `WeighInPlausibility` with two fully independent verdicts — `is_weight_plausible`/`weight_reason` and `is_body_fat_plausible`/`body_fat_reason` — instead of one combined `is_plausible`/`reason`. One axis can never flag the other.
+- The body-fat floor check gained an explicit `> 0` guard (`body_fat_pct > 0 and body_fat_pct <= body_fat_floor_pct`), so it is evaluated only against present, non-null, **non-zero** values. This defends the rule itself even if some future connector forgets to normalize its own zero-sentinel the way Eufy now does — the connector-level normalization and this guard are deliberately redundant, not one-or-the-other.
+- Schema v5 splits the single `is_flagged_implausible`/`plausibility_reason` pair into two independent pairs, one per axis:
+
+| Column | Owner | Written by |
+|---|---|---|
+| `is_weight_flagged_implausible` (renamed from `is_flagged_implausible`) | the rule's weight axis | sync + backfill |
+| `weight_plausibility_reason` (renamed from `plausibility_reason`) | the rule's weight axis | sync + backfill |
+| `is_body_fat_flagged_implausible` (new) | the rule's body-fat axis | sync + backfill |
+| `body_fat_plausibility_reason` (new) | the rule's body-fat axis | sync + backfill |
+| `bo_confirmed_valid` / `bo_confirmed_at` | the BO | only `scripts/confirm_weigh_in.py` — unchanged, stays attached to the weight axis only, since that's the thing a BO override actually restores to analytics |
+
+  A rename, not an additive-only change like v2/v4: the old columns' *meaning* changed (a single combined verdict → one specific axis), and keeping the old names while quietly narrowing what they mean would risk later code silently reading "is this weight bad" as "was anything about this record flagged" — exactly this bug, relocated. `ALTER TABLE ... RENAME COLUMN` is a single, lossless statement (SQLite ≥ 3.25), no new migration machinery required.
+
+- A one-time corrective pass, `trainiq/storage/backfill.py::decouple_weigh_in_plausibility()`, runs automatically on the v4→v5 transition (same precedent as v3→v4's `backfill_weigh_in_plausibility()`): it first normalizes any already-stored `body_fat_pct`/`muscle_mass_pct` zeros to `NULL`, then re-evaluates every row in ascending timestamp order against the corrected rule. A row whose body-fat axis alone trips still contributes its weight to later rows' rolling baselines — the concrete mechanism that was silently suppressing all 123 readings (and anyone else's baseline built from them) before this fix.
+- `sync/engine.py`'s `_upsert_weigh_in()` column lists, `_recent_weights_before()`'s predicate, and `scripts/confirm_weigh_in.py` were all updated for the renamed/added columns. `records_flagged_implausible` (the sync summary counter) now counts the weight axis only — a body-fat-only flag is real, persisted, queryable information, but isn't an analytics-exclusion event, which is what that counter has always meant.
+
+### No confirm/override path for the body-fat axis
+
+`confirm_weigh_in.py` stays scoped to the weight axis. A body-fat flag is visible in the database but doesn't exclude anything from analytics under this design, so there's nothing today for a BO override to *restore*. A future need to silence a body-fat false positive (e.g. a genuinely very lean athlete repeatedly tripping the floor) would be a new, separate capability, not a gap in this correction's scope.

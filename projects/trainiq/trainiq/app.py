@@ -51,14 +51,14 @@ from trainiq.connectors.strava_unofficial import CRED_STRAVA_SESSION_COOKIE as S
 from trainiq.connectors.strava_unofficial import PROVIDER as STRAVA_UNOFFICIAL_PROVIDER
 from trainiq.connectors.strava_unofficial import StravaUnofficialConnector
 from trainiq.credentials.store import CredentialStore
-from trainiq.logging_setup import configure, diagnostic_logger, summary_logger
+from trainiq.logging_setup import DEFAULT_LOG_DIR, configure, diagnostic_logger, summary_logger
 from trainiq.safety import RunningFromTrashError, assert_not_running_from_trash
 from trainiq.setup_wizard import run_configure, run_first_time_setup
 from trainiq.storage.schema import open_db
 from trainiq.sync.engine import SynchronizationEngine
 
 APP_SUPPORT_DIR = Path.home() / "Library" / "Application Support" / "TrainIQ"
-LOG_DIR = Path.home() / "Library" / "Logs" / "TrainIQ"
+LOG_DIR = DEFAULT_LOG_DIR
 CONFIG_PATH = APP_SUPPORT_DIR / "config.json"
 
 
@@ -78,6 +78,12 @@ class _Reporter:
 
     def warning(self, msg: str) -> None:
         self._log.warning(msg)
+        self.lines.append(msg)
+
+    def echo(self, msg: str) -> None:
+        """Append to self.lines for console printing only. Used when the
+        message was already logged elsewhere (the Sync Engine's own
+        summary_logger call) so it isn't written to summary.log twice."""
         self.lines.append(msg)
 
 
@@ -168,12 +174,7 @@ def _log_sync_summary(result, reporter: "_Reporter | None" = None) -> None:
         elif r.skipped_reason:
             report.info(f"{r.provider}: skipped this run — {r.skipped_reason}")
         else:
-            report.info(
-                f"{r.provider}: downloaded "
-                f"{r.records_inserted + r.records_updated + r.records_malformed + r.records_skipped}, "
-                f"inserted {r.records_inserted}, updated {r.records_updated}, "
-                f"malformed {r.records_malformed}, skipped {r.records_skipped}"
-            )
+            report.echo(r.summary_line)
 
 
 def _print_log_locations() -> None:

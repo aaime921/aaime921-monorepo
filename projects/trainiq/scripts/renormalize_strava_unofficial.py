@@ -33,6 +33,10 @@ Today this is a no-op for training_load (resolves to None/"unknown"
 regardless of discipline, since no AthleteProfile persistence exists yet)
 — but if that changes before you run this script, re-normalizing will also
 assign real training_load values to these rows for the first time.
+
+Note on logging (issue #44): this script configures logging the same way
+trainiq/app.py's main() does, so the per-record "training_load unknown"
+diagnostic noted above no longer floods the console once per record.
 """
 
 from __future__ import annotations
@@ -45,6 +49,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from trainiq.config import get_athlete_timezone
 from trainiq.connectors.strava_unofficial import PROVIDER, StravaUnofficialConnector
 from trainiq.credentials.store import CredentialStore
+from trainiq.logging_setup import DEFAULT_LOG_DIR, configure
 from trainiq.normalization.renormalize import renormalize_provider
 from trainiq.storage.schema import open_db
 from trainiq.sync.engine import recompute_checkpoint_from_normalized
@@ -55,6 +60,8 @@ DEFAULT_CONFIG_PATH = APP_SUPPORT_DIR / "config.json"
 
 
 def main() -> int:
+    configure(DEFAULT_LOG_DIR)
+
     import argparse
 
     parser = argparse.ArgumentParser(
