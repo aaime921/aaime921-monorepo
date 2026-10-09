@@ -169,6 +169,25 @@ def upsert_normalized_activity(conn: sqlite3.Connection, record: dict) -> str:
     three for Strava/Eufy, so COALESCE(real_value_or_None, old_value)
     overwrites identically whenever a real sync actually runs.
 
+    Issue #57: distance_m joins this same COALESCE group, for the
+    identical reason and from the same fetch — Peloton's distance_m is now
+    also resolved from the skip-gated performance-endpoint fetch (not an
+    account-level setting), so it gains the same "didn't attempt this
+    pass" case avg_hr/max_hr/max_power already have. This has a wider
+    blast radius than those three: distance_m already has real history
+    across Strava/Eufy too, not just new Peloton-only columns. For those
+    providers normalize() never skip-gates distance_m, so
+    COALESCE(real_value_or_None, old_value) is behaviorally identical to
+    today's overwrite whenever a real sync runs — the accepted tradeoff is
+    a narrow one (see peloton.py's Feature 3.10 docstring and the
+    architecture doc's "Risks/tradeoffs"): a non-Peloton provider's source
+    data legitimately transitioning a specific activity's distance from a
+    real value to None on a later sync would now have its stale value
+    preserved instead of cleared. Judged acceptable against the
+    alternative — unconditional overwrite re-nulling every already-correct
+    Peloton distance on each multi-day resync, the exact regression #57
+    fixes.
+
     The COALESCE treatment for #46's 6 columns is load-bearing, not
     cosmetic: re-running
     renormalize_provider() for Peloton calls connector.normalize() against
@@ -213,7 +232,8 @@ def upsert_normalized_activity(conn: sqlite3.Connection, record: dict) -> str:
     conn.execute(
         """
         UPDATE normalized_activities SET
-            start_time = ?, duration_s = ?, discipline = ?, distance_m = ?,
+            start_time = ?, duration_s = ?, discipline = ?,
+            distance_m = COALESCE(?, distance_m),
             avg_hr = COALESCE(?, avg_hr), max_hr = COALESCE(?, max_hr),
             avg_power = ?, max_power = COALESCE(?, max_power), calories = ?,
             elevation_gain_m = ?, moving_time_s = ?, is_indoor = ?,

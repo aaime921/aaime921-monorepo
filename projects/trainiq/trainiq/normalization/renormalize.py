@@ -28,7 +28,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import dataclass
-from typing import Callable, Optional
+from typing import Optional
 
 from trainiq.athlete.profile import AthleteProfile
 from trainiq.connectors.base import Connector
@@ -51,7 +51,6 @@ def renormalize_provider(
     provider: str,
     connector: Connector,
     athlete_profile: Optional[AthleteProfile] = None,
-    raw_transform: Optional[Callable[[dict], dict]] = None,
 ) -> RenormalizeResult:
     """Re-derives every normalized_activities row for `provider` from its
     already-stored raw_activities payload, via connector.normalize() +
@@ -61,16 +60,6 @@ def renormalize_provider(
     Malformed-record handling mirrors SynchronizationEngine.sync_connector()
     exactly (sync/engine.py): a row that fails to build a canonical record
     is logged and skipped, never allowed to abort the whole pass.
-
-    `raw_transform`, when given, is applied to each row's parsed raw dict
-    (`raw = raw_transform(raw)`) immediately after `json.loads(...)` and
-    before `connector.normalize(raw)` — in-memory only, `raw_activities` is
-    never written back to (issue #45: lets a one-off script inject a fact
-    the stored payload itself doesn't carry, e.g. a confirmed distance
-    unit, without touching the raw payload). Omitted/None preserves
-    today's exact behavior — confirmed by inspection that the one existing
-    call site (scripts/renormalize_strava_unofficial.py, issue #36) passes
-    no such argument.
 
     Issue #48 note: this function is already fully generic (`provider` +
     any `Connector`), so re-normalizing the official `strava` provider the
@@ -106,8 +95,6 @@ def renormalize_provider(
             continue
 
         raw = json.loads(row["payload_json"])
-        if raw_transform is not None:
-            raw = raw_transform(raw)
         normalized = connector.normalize(raw)
 
         try:
