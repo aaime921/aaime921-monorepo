@@ -188,6 +188,20 @@ def upsert_normalized_activity(conn: sqlite3.Connection, record: dict) -> str:
     Peloton distance on each multi-day resync, the exact regression #57
     fixes.
 
+    Issue #50: avg_pace_s_per_km and total_output_kj join the UNCONDITIONAL
+    overwrite group (moving_time_s/elevation_gain_m's precedent), not the
+    COALESCE one — both are always fully re-derivable from the stored raw
+    payload with no "didn't attempt this pass" case of their own: Peloton's
+    total_output_kj comes straight off the same list-endpoint record
+    download() already fetches (like calories), and avg_pace_s_per_km comes
+    from strava_unofficial's normalize() reading the `_streams_*` keys
+    trainiq.connectors.strava_streams.enrich_strava_streams() merges into
+    raw_activities.payload_json — once merged, every later normalize() call
+    (a renormalize_provider() pass included) reproduces the same value from
+    raw alone. The "didn't attempt this pass" case for the streams fetch
+    ITSELF lives in streams_fetch_status, written only by that narrow
+    enrichment UPDATE (trainiq/connectors/strava_streams.py), never here.
+
     The COALESCE treatment for #46's 6 columns is load-bearing, not
     cosmetic: re-running
     renormalize_provider() for Peloton calls connector.normalize() against
@@ -209,8 +223,8 @@ def upsert_normalized_activity(conn: sqlite3.Connection, record: dict) -> str:
              activity_title, instructor_name, class_type, planned_duration_s,
              provider_class_id, sport_type_raw, difficulty_estimate,
              hr_zone_1_s, hr_zone_2_s, hr_zone_3_s, hr_zone_4_s, hr_zone_5_s, effort_points,
-             performance_fetch_status)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             performance_fetch_status, avg_pace_s_per_km, total_output_kj)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             record["provider"], record["external_id"], record["start_time"], record["duration_s"],
@@ -224,6 +238,7 @@ def upsert_normalized_activity(conn: sqlite3.Connection, record: dict) -> str:
             record.get("hr_zone_1_s"), record.get("hr_zone_2_s"), record.get("hr_zone_3_s"),
             record.get("hr_zone_4_s"), record.get("hr_zone_5_s"), record.get("effort_points"),
             record.get("performance_fetch_status"),
+            record.get("avg_pace_s_per_km"), record.get("total_output_kj"),
         ),
     )
     if cursor.rowcount == 1:
@@ -247,7 +262,8 @@ def upsert_normalized_activity(conn: sqlite3.Connection, record: dict) -> str:
             difficulty_estimate = COALESCE(?, difficulty_estimate),
             hr_zone_1_s = ?, hr_zone_2_s = ?, hr_zone_3_s = ?, hr_zone_4_s = ?, hr_zone_5_s = ?,
             effort_points = ?,
-            performance_fetch_status = COALESCE(?, performance_fetch_status)
+            performance_fetch_status = COALESCE(?, performance_fetch_status),
+            avg_pace_s_per_km = ?, total_output_kj = ?
         WHERE provider = ? AND external_id = ?
         """,
         (
@@ -262,6 +278,7 @@ def upsert_normalized_activity(conn: sqlite3.Connection, record: dict) -> str:
             record.get("hr_zone_1_s"), record.get("hr_zone_2_s"), record.get("hr_zone_3_s"),
             record.get("hr_zone_4_s"), record.get("hr_zone_5_s"), record.get("effort_points"),
             record.get("performance_fetch_status"),
+            record.get("avg_pace_s_per_km"), record.get("total_output_kj"),
             record["provider"], record["external_id"],
         ),
     )

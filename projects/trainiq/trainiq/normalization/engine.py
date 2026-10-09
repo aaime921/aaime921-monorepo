@@ -101,6 +101,15 @@ def _build_activity_record(
         # attempted this pass" or a genuinely failed fetch) and must reach
         # upsert_normalized_activity()'s COALESCE logic unchanged.
         "performance_fetch_status": normalized.get("performance_fetch_status"),
+        # Issue #50: same pass-through-verbatim treatment. avg_pace_s_per_km
+        # (strava_unofficial, derived from streams once enriched) and
+        # total_output_kj (peloton, from raw total_work) are both fully
+        # re-derivable from the raw payload with no "didn't attempt this
+        # pass" case of their own (see upsert_normalized_activity()'s
+        # docstring) — absence (None) means "not yet enriched" or
+        # "total_work absent," never fabricated.
+        "avg_pace_s_per_km": normalized.get("avg_pace_s_per_km"),
+        "total_output_kj": normalized.get("total_output_kj"),
     }
 
 

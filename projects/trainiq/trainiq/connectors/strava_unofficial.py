@@ -72,6 +72,15 @@ DEFAULT_RETRY_AFTER_S = 3600  # used when a 429 has no Retry-After header
 
 TRAINING_ACTIVITIES_PATH = "/athlete/training_activities"
 
+# Issue #50: per-activity streams endpoint (spike's live evidence, issue
+# #50 comment). Order is irrelevant to the server; kept stable here so
+# tests can assert on the exact params sent.
+ACTIVITY_STREAMS_PATH_TEMPLATE = "/activities/{activity_id}/streams"
+STREAM_TYPES = [
+    "time", "distance", "latlng", "altitude",
+    "heartrate", "velocity_smooth", "grade_smooth", "moving",
+]
+
 # Required per the BO's live evidence — without these the endpoint returns
 # an HTML page instead of JSON (requirements doc Scope).
 WEB_ENDPOINT_HEADERS = {
@@ -203,11 +212,20 @@ class StravaUnofficialConnector(Connector):
         return True
 
     def _authenticated_get(
-        self, path: str, params: dict[str, Any] | None = None, cookie_override: str | None = None
-    ) -> dict[str, Any]:
+        self,
+        path: str,
+        params: dict[str, Any] | None = None,
+        cookie_override: str | None = None,
+        not_found_ok: bool = False,
+    ) -> dict[str, Any] | None:
         """GET against `path` with the Cookie and web-endpoint headers,
         applying one uniform response classification (mirrors
-        PelotonConnector's _authenticated_get)."""
+        PelotonConnector's _authenticated_get).
+
+        Issue #50: `not_found_ok` lets a caller opt into treating a 404 as
+        "resource gone/private" (returns None) instead of the default
+        "transient, worth retrying" classification every existing caller
+        still gets unchanged — see fetch_activity_streams()."""
         cookie = cookie_override if cookie_override is not None else self._active_cookie
         try:
             response = self._session.get(
@@ -239,6 +257,8 @@ class StravaUnofficialConnector(Connector):
         if response.status_code == 429:
             retry_after = _parse_retry_after(response) or DEFAULT_RETRY_AFTER_S
             raise TransientError(f"{PROVIDER}: rate limited", retry_after_s=retry_after)
+        if not_found_ok and response.status_code == 404:
+            return None
         if response.status_code == 404 or response.status_code >= 500:
             raise TransientError(f"{PROVIDER}: transient HTTP status {response.status_code}")
         if response.status_code != 200:
@@ -302,6 +322,28 @@ class StravaUnofficialConnector(Connector):
             page += 1
         return activities
 
+    def fetch_activity_streams(self, activity_id: str) -> dict[str, list] | None:
+        """Issue #50. `GET /activities/{id}/streams?stream_types[]=...` for
+        one activity (spike's live evidence, issue #50 comment). Returns
+        the parsed `{stream_type: [values...]}` dict, or None if the
+        activity is gone/private (confirmed 404 — `not_found_ok=True`,
+        never raised as TransientError for that specific case, unlike every
+        other caller of `_authenticated_get`). 401/403/3xx/non-JSON still
+        raise AuthenticationError (clears the cookie, same as every other
+        call — an invalid session is connector-wide, not per-activity);
+        429 raises TransientError(retry_after_s=...); 5xx raises
+        TransientError. Called at most once per activity by
+        trainiq.connectors.strava_streams.enrich_strava_streams() (AC7)."""
+        if self._active_cookie is None:
+            raise AuthenticationError(
+                f"{PROVIDER}: fetch_activity_streams() called before a successful authenticate()"
+            )
+        return self._authenticated_get(
+            ACTIVITY_STREAMS_PATH_TEMPLATE.format(activity_id=activity_id),
+            params={"stream_types[]": STREAM_TYPES},
+            not_found_ok=True,
+        )
+
     def normalize(self, raw: dict[str, Any]) -> dict[str, Any]:
         """Maps the web endpoint's *_raw fields onto the same internal
         shape this connector has always produced. Units, per the BO's
@@ -313,18 +355,33 @@ class StravaUnofficialConnector(Connector):
             connector's `elapsed_time` (total elapsed, not moving-only).
           - elevation_gain_raw: meters (float).
         """
+        # Issue #50: avg_hr/max_hr/moving_time_s/avg_pace_s_per_km come from
+        # the per-activity streams fetch (trainiq.connectors.strava_streams.
+        # enrich_strava_streams()), which merges `_streams_*` keys into this
+        # same raw payload (raw_activities.payload_json) once it runs —
+        # never a download()-side change, since enrichment happens as a
+        # separate step after sync (see architecture doc, "Approach").
+        # Absent keys (not yet enriched, or enriched with no usable stream
+        # data) mean every one of these stays None/falls back, never
+        # fabricated. `_streams_moving_time_s` OVERRIDES moving_time_raw
+        # when present — moving_time_raw equals elapsed_time_raw for runs
+        # (issue #48's known gap), the true moving time only the streams
+        # fetch can derive.
+        streams_moving_time_s = raw.get("_streams_moving_time_s")
+        moving_time_s = streams_moving_time_s if streams_moving_time_s is not None else raw.get("moving_time_raw")
+
         return {
             "provider": PROVIDER,
             "external_id": str(raw["id"]),
             "start_time": _extract_start_time_iso(raw, self._local_timezone),
             "duration_s": raw["elapsed_time_raw"],
             "discipline_raw": raw.get("activity_type_display_name") or raw.get("display_type"),
-            # Per requirements AC4 / open question 2: no HR, power, or
-            # calories field appears anywhere in the BO's captured field
-            # list for this endpoint. Never fabricated — stays None,
-            # exactly like today's "never reported by this endpoint" fields.
-            "avg_hr": None,
-            "max_hr": None,
+            # Issue #50: real values once the streams enrichment step has
+            # run (merged into raw as `_streams_avg_hr`/`_streams_max_hr`);
+            # None beforehand — this endpoint itself never reports HR
+            # (AC4/open question 2, unchanged).
+            "avg_hr": raw.get("_streams_avg_hr"),
+            "max_hr": raw.get("_streams_max_hr"),
             "avg_power": None,
             "max_power": None,
             "distance_m": raw.get("distance_raw"),
@@ -332,8 +389,13 @@ class StravaUnofficialConnector(Connector):
             # Issue #48. .get() everywhere, never raw[...]: a missing source
             # field must stay None, never fabricated/defaulted (AC3).
             "elevation_gain_m": raw.get("elevation_gain_raw"),
-            "moving_time_s": raw.get("moving_time_raw"),
+            "moving_time_s": moving_time_s,
             "is_indoor": raw.get("trainer"),
+            # Issue #50: derived by strava_streams.derive_stream_metrics()
+            # at enrichment time, stored under the same underscore-prefix
+            # convention as the fields above; None until enrichment runs,
+            # or if streams lack usable distance/moving data.
+            "avg_pace_s_per_km": raw.get("_streams_avg_pace_s_per_km"),
             "synced_at": datetime.now(timezone.utc).isoformat(),
             # Issue #46 (AC3): raw `name` and the same discipline_raw
             # fallback chain (activity_type_display_name, else

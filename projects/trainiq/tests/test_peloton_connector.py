@@ -727,6 +727,20 @@ def test_normalize_maps_cycling_class_with_power(credential_store):
     assert result["calories"] == 30.64
     assert result["avg_power"] == pytest.approx(23646.98 / 299)
     assert result["distance_m"] == pytest.approx(1216.3)
+    # Issue #50: total_output_kj = total_work (J) / 1000, from the same
+    # already-present raw field avg_power derives from above.
+    assert result["total_output_kj"] == pytest.approx(23646.98 / 1000)
+
+
+def test_normalize_missing_total_work_yields_none_total_output_kj(credential_store):
+    """Issue #50, AC10: NULL if total_work absent, never fabricated."""
+    fake = FakePelotonSession()
+    connector = PelotonConnector(credential_store, session=fake)
+    raw = {**_REAL_RECORD_NO_EFFORT_ZONES, "total_work": None}
+
+    result = connector.normalize(raw)
+
+    assert result["total_output_kj"] is None
 
 
 def test_normalize_effort_zones_null_is_handled_as_absent_not_an_error(credential_store):

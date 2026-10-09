@@ -47,15 +47,17 @@ from trainiq.connectors.base import Connector
 from trainiq.connectors.eufy import EufyConnector
 from trainiq.connectors.peloton import PelotonConnector
 from trainiq.connectors.strava import StravaConnector
+from trainiq.connectors.strava_streams import NEW_PER_SYNC_CAP, enrich_strava_streams
 from trainiq.connectors.strava_unofficial import CRED_STRAVA_SESSION_COOKIE as STRAVA_UNOFFICIAL_CRED_SESSION_COOKIE
 from trainiq.connectors.strava_unofficial import PROVIDER as STRAVA_UNOFFICIAL_PROVIDER
 from trainiq.connectors.strava_unofficial import StravaUnofficialConnector
 from trainiq.credentials.store import CredentialStore
+from trainiq.dedup.detector import run_backfill as run_dedup_backfill
 from trainiq.logging_setup import DEFAULT_LOG_DIR, configure, diagnostic_logger, summary_logger
 from trainiq.safety import RunningFromTrashError, assert_not_running_from_trash
 from trainiq.setup_wizard import run_configure, run_first_time_setup
 from trainiq.storage.schema import open_db
-from trainiq.sync.engine import SynchronizationEngine
+from trainiq.sync.engine import AuthenticationError, SynchronizationEngine, TransientError
 
 APP_SUPPORT_DIR = Path.home() / "Library" / "Application Support" / "TrainIQ"
 LOG_DIR = DEFAULT_LOG_DIR
@@ -177,6 +179,34 @@ def _log_sync_summary(result, reporter: "_Reporter | None" = None) -> None:
             report.echo(r.summary_line)
 
 
+def _run_strava_streams_enrichment(conn, connectors: list[Connector], reporter: "_Reporter") -> None:
+    """Issue #50 post-sync hook: runs dedup (idempotent, so Peloton-linked
+    activities are correctly excluded) then enriches up to
+    NEW_PER_SYNC_CAP never-attempted strava_unofficial activities with
+    per-activity streams. No-op if the unofficial Strava connector isn't
+    configured this run. An auth/transient failure here is reported and
+    swallowed, not fatal to the sync as a whole (ADR-009) — the connector's
+    own cookie-clearing (on AuthenticationError) already surfaces as a
+    recovery need on the NEXT regular sync's authenticate() call."""
+    strava_unofficial = next(
+        (c for c in connectors if isinstance(c, StravaUnofficialConnector)), None
+    )
+    if strava_unofficial is None:
+        return
+
+    try:
+        run_dedup_backfill(conn)
+        if not strava_unofficial.authenticate():
+            return
+        result = enrich_strava_streams(conn, strava_unofficial, limit=NEW_PER_SYNC_CAP)
+        reporter.info(
+            f"{STRAVA_UNOFFICIAL_PROVIDER} streams: processed {result.processed} "
+            f"(ok {result.ok}, no_streams {result.no_streams}, unavailable {result.unavailable})"
+        )
+    except (AuthenticationError, TransientError) as exc:
+        reporter.warning(f"{STRAVA_UNOFFICIAL_PROVIDER} streams enrichment stopped: {exc}")
+
+
 def _print_log_locations() -> None:
     print(f"\nFull logs: {LOG_DIR / 'summary.log'}, {LOG_DIR / 'diagnostic.log'}")
 
@@ -228,6 +258,7 @@ def main(argv: list[str] | None = None) -> int:
     result = engine.run_once(connectors)
     sync_reporter = _Reporter(log)
     _log_sync_summary(result, reporter=sync_reporter)
+    _run_strava_streams_enrichment(conn, connectors, reporter=sync_reporter)
     for line in sync_reporter.lines:
         print(line)
     _print_log_locations()
