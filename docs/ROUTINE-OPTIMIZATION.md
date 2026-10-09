@@ -26,7 +26,7 @@
 
 ---
 
-## Pending UI changes (BO applies; routine settings are locked)
+## UI changes applied 2026-10-09 (BO; routine settings are locked)
 
 Findings: issue #58 produced 8 `labeled` events, so the unfiltered BA fired about 8 times for 1 real job,
 and `developer-lite`/`qa-lite` fired on every `stage:dev`/`stage:qa` although no issue has a `complexity:*`
@@ -40,8 +40,10 @@ label (no Triage routine exists). About 16 runs per issue vs about 5 needed, eac
 3. **Models**: ba/architect/developer/qa/lead to Sonnet 5.5 (same price as Sonnet 5, newer); lead-router to Opus 5.5
    ($4/$20 vs $5/$25 per M tokens). Only if available in the routine model picker.
 4. Paste the new `02`, `03`, `05`, `07`, `08` instruction files into their routines.
-5. Test (see `SETUP-GUIDE.md` smoke checks), then delete the "pending" sentence in `CLAUDE.md`.
+5. Test (see `SETUP-GUIDE.md` smoke checks). Done.
 6. Optional: `~/.claude/CLAUDE.md` still lists 8 routines and the lite rows.
+
+Verified by smoke tests #64 (full pipeline: one run per stage) and #67 (BA runs once; the earlier double run came from the Opened trigger and is fixed by #66).
 
 Measure: compare runs per issue in the routines run history before and after; target is about 5.
 

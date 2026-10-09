@@ -28,9 +28,8 @@ Routines load this file on every run, so it is kept short.
 | lead | Pull request: Closed | `Is merged = true` | Sonnet 5.5 |
 | lead-router | Issue: Labeled | `needs:routing` | Opus 5.5 |
 
-Only the Composio connector. This table is the target state; apply the "Pending UI changes"
-in `docs/ROUTINE-OPTIMIZATION.md`, then delete this sentence. Each routine reads its
-instruction file `docs/ROUTINE-INSTRUCTIONS/` (entry point: `00-MONOREPO-ENTRY-POINT.md`).
+Only the Composio connector. Each routine reads its instruction file in
+`docs/ROUTINE-INSTRUCTIONS/` (entry point: `00-MONOREPO-ENTRY-POINT.md`).
 
 ## Ringfencing
 
