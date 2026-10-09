@@ -25,7 +25,7 @@ from pathlib import Path
 
 from trainiq.storage.backfill import backfill_weigh_in_plausibility, decouple_weigh_in_plausibility
 
-CURRENT_SCHEMA_VERSION = 8
+CURRENT_SCHEMA_VERSION = 10
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -178,6 +178,25 @@ _MIGRATIONS: dict[int, str] = {
         ALTER TABLE normalized_activities ADD COLUMN provider_class_id TEXT;
         ALTER TABLE normalized_activities ADD COLUMN sport_type_raw TEXT;
     """,
+    # Issue #48: elevation gain, moving time, indoor/outdoor flag for
+    # Strava activities. Nullable, no default — "missing" and "confirmed
+    # outdoor/zero-elevation" are different facts (AC3); ADD COLUMN with
+    # no NOT NULL/DEFAULT backfills existing rows with NULL, which is
+    # correct for them regardless (their raw payloads predate this fix).
+    # Renumbered 6 -> 7 when rebased after Issue #46 (which took v6).
+    7: """
+        ALTER TABLE normalized_activities ADD COLUMN elevation_gain_m REAL;
+        ALTER TABLE normalized_activities ADD COLUMN moving_time_s INTEGER;
+        ALTER TABLE normalized_activities ADD COLUMN is_indoor INTEGER;
+    """,
+    # Issue #58 (resolves BL-011): the ride-details response fetched for
+    # every successful Peloton class lookup already carries
+    # difficulty_estimate at zero marginal network cost — a 7th nullable
+    # enrichment column, same all-nullable pattern as the 6 added in v6.
+    # Renumbered 7 -> 8 when merged after Issue #48 (which took v7).
+    8: """
+        ALTER TABLE normalized_activities ADD COLUMN difficulty_estimate REAL;
+    """,
     # Issue #47, AC1 only: HR-zone durations (z1-z5, seconds) and Peloton's
     # own effort-points score. Sourced from `effort_zones` on the SAME
     # list-endpoint record download() already fetches every pass (no new
@@ -187,8 +206,9 @@ _MIGRATIONS: dict[int, str] = {
     # max_power via the separate, still-UNCONFIRMED performance endpoint)
     # is explicitly out of this migration — see
     # docs/trainiq/architecture/47-peloton-heart-rate-capture.md's Task 1.
-    # Renumbered 6 -> 7 per the BO's note on issue #47 (Issue #46 took v6).
-    7: """
+    # Renumbered 6 -> 7 per the BO's note on issue #47 (Issue #46 took v6),
+    # then 7 -> 9 when merged after Issues #48 (v7) and #58 (v8).
+    9: """
         ALTER TABLE normalized_activities ADD COLUMN hr_zone_1_s INTEGER;
         ALTER TABLE normalized_activities ADD COLUMN hr_zone_2_s INTEGER;
         ALTER TABLE normalized_activities ADD COLUMN hr_zone_3_s INTEGER;
@@ -213,7 +233,8 @@ _MIGRATIONS: dict[int, str] = {
     # the SAME fetch_workout_performance() call, so one shared status
     # column is correct — a per-concern column would always move in
     # lockstep with this one.
-    8: """
+    # Renumbered 8 -> 10 when merged after Issues #48 (v7) and #58 (v8).
+    10: """
         ALTER TABLE normalized_activities ADD COLUMN performance_fetch_status TEXT;
     """,
 }

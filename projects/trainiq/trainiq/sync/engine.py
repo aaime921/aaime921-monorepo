@@ -140,10 +140,11 @@ def upsert_normalized_activity(conn: sqlite3.Connection, record: dict) -> str:
     INSERT OR IGNORE / conditional UPDATE pattern a second time. Does not
     commit — the caller owns the transaction boundary, same as before.
 
-    Issue #46: the 6 new class-metadata columns (activity_title through
-    sport_type_raw) use `.get(...)` with no KeyError on a missing key —
-    every OTHER column above is still indexed directly, since the schema
-    genuinely requires them. In the UPDATE branch ONLY, these 6 use
+    Issue #46 (plus difficulty_estimate, issue #58): the 7 class-metadata
+    columns (activity_title through sport_type_raw, plus
+    difficulty_estimate) use `.get(...)` with no KeyError on a missing key
+    — every OTHER column above is still indexed directly, since the schema
+    genuinely requires them. In the UPDATE branch ONLY, these 7 use
     `COALESCE(?, existing_column)` instead of unconditional overwrite —
     every pre-existing column keeps today's unconditional-overwrite
     behavior exactly as-is (correct for them: they're always fully
@@ -184,20 +185,23 @@ def upsert_normalized_activity(conn: sqlite3.Connection, record: dict) -> str:
         INSERT OR IGNORE INTO normalized_activities
             (provider, external_id, start_time, duration_s, discipline, distance_m,
              avg_hr, max_hr, avg_power, max_power, calories,
+             elevation_gain_m, moving_time_s, is_indoor,
              training_load, training_load_method, source_confidence,
              activity_title, instructor_name, class_type, planned_duration_s,
-             provider_class_id, sport_type_raw,
+             provider_class_id, sport_type_raw, difficulty_estimate,
              hr_zone_1_s, hr_zone_2_s, hr_zone_3_s, hr_zone_4_s, hr_zone_5_s, effort_points,
              performance_fetch_status)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             record["provider"], record["external_id"], record["start_time"], record["duration_s"],
             record["discipline"], record["distance_m"], record["avg_hr"], record["max_hr"],
             record["avg_power"], record["max_power"], record["calories"],
+            record["elevation_gain_m"], record["moving_time_s"], record["is_indoor"],
             record["training_load"], record["training_load_method"], record["source_confidence"],
             record.get("activity_title"), record.get("instructor_name"), record.get("class_type"),
             record.get("planned_duration_s"), record.get("provider_class_id"), record.get("sport_type_raw"),
+            record.get("difficulty_estimate"),
             record.get("hr_zone_1_s"), record.get("hr_zone_2_s"), record.get("hr_zone_3_s"),
             record.get("hr_zone_4_s"), record.get("hr_zone_5_s"), record.get("effort_points"),
             record.get("performance_fetch_status"),
@@ -212,6 +216,7 @@ def upsert_normalized_activity(conn: sqlite3.Connection, record: dict) -> str:
             start_time = ?, duration_s = ?, discipline = ?, distance_m = ?,
             avg_hr = COALESCE(?, avg_hr), max_hr = COALESCE(?, max_hr),
             avg_power = ?, max_power = COALESCE(?, max_power), calories = ?,
+            elevation_gain_m = ?, moving_time_s = ?, is_indoor = ?,
             training_load = ?, training_load_method = ?, source_confidence = ?,
             activity_title = COALESCE(?, activity_title),
             instructor_name = COALESCE(?, instructor_name),
@@ -219,6 +224,7 @@ def upsert_normalized_activity(conn: sqlite3.Connection, record: dict) -> str:
             planned_duration_s = COALESCE(?, planned_duration_s),
             provider_class_id = COALESCE(?, provider_class_id),
             sport_type_raw = COALESCE(?, sport_type_raw),
+            difficulty_estimate = COALESCE(?, difficulty_estimate),
             hr_zone_1_s = ?, hr_zone_2_s = ?, hr_zone_3_s = ?, hr_zone_4_s = ?, hr_zone_5_s = ?,
             effort_points = ?,
             performance_fetch_status = COALESCE(?, performance_fetch_status)
@@ -227,10 +233,12 @@ def upsert_normalized_activity(conn: sqlite3.Connection, record: dict) -> str:
         (
             record["start_time"], record["duration_s"], record["discipline"], record["distance_m"],
             record["avg_hr"], record["max_hr"], record["avg_power"], record["max_power"],
-            record["calories"], record["training_load"], record["training_load_method"],
+            record["calories"], record["elevation_gain_m"], record["moving_time_s"], record["is_indoor"],
+            record["training_load"], record["training_load_method"],
             record["source_confidence"],
             record.get("activity_title"), record.get("instructor_name"), record.get("class_type"),
             record.get("planned_duration_s"), record.get("provider_class_id"), record.get("sport_type_raw"),
+            record.get("difficulty_estimate"),
             record.get("hr_zone_1_s"), record.get("hr_zone_2_s"), record.get("hr_zone_3_s"),
             record.get("hr_zone_4_s"), record.get("hr_zone_5_s"), record.get("effort_points"),
             record.get("performance_fetch_status"),

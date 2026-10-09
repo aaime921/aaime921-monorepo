@@ -1,10 +1,11 @@
 """
 Tests for trainiq.sync.engine.upsert_normalized_activity() — specifically
-issue #46's COALESCE-based handling of the 6 new class-metadata columns
-(activity_title, instructor_name, class_type, planned_duration_s,
-provider_class_id, sport_type_raw), and issue #47 AC2's extension of that
-same COALESCE treatment to avg_hr/max_hr/max_power plus the new
-performance_fetch_status column.
+issue #46's (plus issue #58's difficulty_estimate) COALESCE-based handling
+of the 7 class-metadata columns (activity_title, instructor_name,
+class_type, planned_duration_s, provider_class_id, sport_type_raw,
+difficulty_estimate), and issue #47 AC2's extension of that same COALESCE
+treatment to avg_hr/max_hr/max_power plus the new performance_fetch_status
+column.
 
 Every pre-existing column (discipline, training_load, etc.) keeps today's
 unconditional-overwrite behavior; these are the only ones for which a
@@ -47,6 +48,9 @@ def _base_record(**overrides) -> dict:
         "avg_power": 200,
         "max_power": None,
         "calories": 100,
+        "elevation_gain_m": None,
+        "moving_time_s": None,
+        "is_indoor": None,
         "training_load": None,
         "training_load_method": "unknown",
         "source_confidence": 0.9,
@@ -56,6 +60,7 @@ def _base_record(**overrides) -> dict:
         "planned_duration_s": None,
         "provider_class_id": None,
         "sport_type_raw": None,
+        "difficulty_estimate": None,
         "hr_zone_1_s": None,
         "hr_zone_2_s": None,
         "hr_zone_3_s": None,
@@ -68,11 +73,11 @@ def _base_record(**overrides) -> dict:
     return record
 
 
-def test_insert_with_all_six_new_fields_populated_stores_as_given(db):
+def test_insert_with_all_seven_new_fields_populated_stores_as_given(db):
     record = _base_record(
         activity_title="Power Zone Max", instructor_name="Matt Wilpers",
         class_type="power_zone_max", planned_duration_s=2700, provider_class_id="ride-1",
-        sport_type_raw="Ride",
+        sport_type_raw="Ride", difficulty_estimate=8.40,
     )
 
     outcome = upsert_normalized_activity(db, record)
@@ -89,21 +94,22 @@ def test_insert_with_all_six_new_fields_populated_stores_as_given(db):
     assert row["planned_duration_s"] == 2700
     assert row["provider_class_id"] == "ride-1"
     assert row["sport_type_raw"] == "Ride"
+    assert row["difficulty_estimate"] == 8.40
 
 
-def test_update_with_all_six_new_fields_none_preserves_existing_values(db):
-    """The COALESCE proof: re-upserting with None for all 6 new fields
+def test_update_with_all_seven_new_fields_none_preserves_existing_values(db):
+    """The COALESCE proof: re-upserting with None for all 7 new fields
     (e.g. a renormalize_provider() re-run against an old raw payload with
     no _class_* keys) must NOT wipe already-backfilled class metadata."""
     first = _base_record(
         activity_title="Power Zone Max", instructor_name="Matt Wilpers",
         class_type="power_zone_max", planned_duration_s=2700, provider_class_id="ride-1",
-        sport_type_raw="Ride",
+        sport_type_raw="Ride", difficulty_estimate=8.40,
     )
     upsert_normalized_activity(db, first)
     db.commit()
 
-    second = _base_record(discipline="cycling", avg_power=210)  # all 6 new fields default to None
+    second = _base_record(discipline="cycling", avg_power=210)  # all 7 new fields default to None
     outcome = upsert_normalized_activity(db, second)
     db.commit()
 
@@ -112,19 +118,20 @@ def test_update_with_all_six_new_fields_none_preserves_existing_values(db):
         "SELECT * FROM normalized_activities WHERE provider = ? AND external_id = ?",
         (second["provider"], second["external_id"]),
     ).fetchone())
-    # The 6 new fields are unchanged from the first upsert.
+    # The 7 new fields are unchanged from the first upsert.
     assert row["activity_title"] == "Power Zone Max"
     assert row["instructor_name"] == "Matt Wilpers"
     assert row["class_type"] == "power_zone_max"
     assert row["planned_duration_s"] == 2700
     assert row["provider_class_id"] == "ride-1"
     assert row["sport_type_raw"] == "Ride"
+    assert row["difficulty_estimate"] == 8.40
     # A pre-existing column still overwrites unconditionally, proving this
     # is a targeted exception, not a blanket "ignore the new record."
     assert row["avg_power"] == 210
 
 
-def test_update_with_real_values_for_the_six_new_fields_overwrites(db):
+def test_update_with_real_values_for_the_seven_new_fields_overwrites(db):
     """Proves COALESCE doesn't just always preserve — a real incoming
     value still wins."""
     first = _base_record(class_type="not_a_class")
@@ -134,7 +141,7 @@ def test_update_with_real_values_for_the_six_new_fields_overwrites(db):
     second = _base_record(
         activity_title="Endurance Ride", instructor_name="Robin Arzon",
         class_type="endurance", planned_duration_s=1800, provider_class_id="ride-2",
-        sport_type_raw="VirtualRide",
+        sport_type_raw="VirtualRide", difficulty_estimate=5.25,
     )
     upsert_normalized_activity(db, second)
     db.commit()
@@ -149,6 +156,7 @@ def test_update_with_real_values_for_the_six_new_fields_overwrites(db):
     assert row["planned_duration_s"] == 1800
     assert row["provider_class_id"] == "ride-2"
     assert row["sport_type_raw"] == "VirtualRide"
+    assert row["difficulty_estimate"] == 5.25
 
 
 # --- Issue #47, AC1: hr_zone_1_s..hr_zone_5_s, effort_points. These join

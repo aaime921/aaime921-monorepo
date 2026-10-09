@@ -6,8 +6,9 @@ workouts. Covers two independently-missing concerns through the same
 per-row mechanism:
 
   - class metadata (issue #46): activity_title/instructor_name/class_type/
-    planned_duration_s/provider_class_id, via
-    PelotonConnector.fetch_class_details().
+    planned_duration_s/provider_class_id/difficulty_estimate, via issue #58's
+    two-step resolution: PelotonConnector.fetch_class_session() (`peloton_id`
+    is a class *session* id -> real `ride_id`), then fetch_class_details().
   - avg/max HR + max power (issue #47, AC2/AC4): avg_hr/max_hr/max_power/
     performance_fetch_status, via
     PelotonConnector.fetch_workout_performance().
@@ -48,6 +49,11 @@ non-class/non-HR sentinels — only genuine failures, `class_type =
 for re-attempt, and only when `--retry-failed` is passed — one flag
 covers both, since both mean "retry a previously-failed attempt").
 
+Caching (issue #58, AC3): `session_ride_id_cache` and `ride_details_cache`
+are created ONCE per invocation (not per row) and threaded through every
+row, so repeated classes across the whole backfill run cost at most one
+call per distinct id.
+
 Rate limiting: each network call goes through
 trainiq.sync.engine.retry_with_backoff() (ADR-037), reusing the exact same
 policy a live sync already uses — honors a provider-directed Retry-After
@@ -76,17 +82,15 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from trainiq.connectors.peloton import (
-    CLASS_TITLE_FIELD,
     CLASS_TYPE_LOOKUP_FAILED,
     CLASS_TYPE_NOT_A_CLASS,
-    CLASS_TYPE_RAW_FIELD,
     PERFORMANCE_FETCH_STATUS_FAILED,
     PERFORMANCE_FETCH_STATUS_OK,
-    PLANNED_DURATION_FIELD,
     PROVIDER,
     RIDE_ID_FIELD,
+    SESSION_RIDE_ID_FIELD,
     PelotonConnector,
-    _extract_instructor_name,
+    _extract_ride_metadata,
     _is_class_workout,
     apply_class_metadata_update,
     apply_hr_performance_update,
@@ -139,12 +143,15 @@ def _needs_attempt(current_value: str | None, failed_sentinel: str, retry_failed
 
 def _process_class_metadata(
     conn, connector: PelotonConnector, raw: dict, external_id: str, row: dict,
+    session_ride_id_cache: dict, ride_details_cache: dict,
     retry_failed: bool, max_retries: int, sleep_fn,
 ) -> str | None:
-    """Resolves this row's class-metadata concern (issue #46), independent
-    of the performance concern. Returns "not_a_class"/"success"/"failed",
-    or None if this concern was already resolved and not eligible for
-    retry (so the caller doesn't count it as newly processed)."""
+    """Resolves this row's class-metadata concern (issues #46/#58),
+    independent of the performance concern. Returns "not_a_class"/
+    "success"/"failed", or None if this concern was already resolved and
+    not eligible for retry (so the caller doesn't count it as newly
+    processed). The two caches are created once by run_backfill() and
+    threaded through every row (issue #58, AC3)."""
     if not _needs_attempt(row["class_type"], CLASS_TYPE_LOOKUP_FAILED, retry_failed):
         return None
 
@@ -152,34 +159,39 @@ def _process_class_metadata(
         apply_class_metadata_update(conn, external_id, {"class_type": CLASS_TYPE_NOT_A_CLASS})
         return "not_a_class"
 
-    # retry_with_backoff/fetch_class_details let TransientError (retries
-    # exhausted) and AuthenticationError propagate uncaught — a genuinely
-    # unrecoverable condition for THIS run, not a per-row "lookup failed"
-    # outcome (every subsequent ride_id would fail identically). Letting
-    # the script crash here is what makes AC6's resume behavior correct:
-    # every row already committed stays committed, and the next
-    # invocation's candidate selection naturally skips them.
-    ride_id = raw.get(RIDE_ID_FIELD)
-    details = retry_with_backoff(
-        lambda: connector.fetch_class_details(ride_id), PROVIDER, max_retries=max_retries, sleep_fn=sleep_fn
-    )
-
-    if details is None:
-        diagnostic_logger().warning(f"{PROVIDER}: class lookup failed for ride_id={ride_id!r}")
+    # retry_with_backoff/fetch_class_session/fetch_class_details let
+    # TransientError (retries exhausted) and AuthenticationError propagate
+    # uncaught — a genuinely unrecoverable condition for THIS run, not a
+    # per-row "lookup failed" outcome (every subsequent id would fail
+    # identically). Letting the script crash here is what makes AC6's
+    # resume behavior correct: every row already committed stays
+    # committed, and the next invocation's candidate selection naturally
+    # skips them.
+    peloton_id = raw.get(RIDE_ID_FIELD)
+    if peloton_id not in session_ride_id_cache:
+        session = retry_with_backoff(
+            lambda: connector.fetch_class_session(peloton_id), PROVIDER, max_retries=max_retries, sleep_fn=sleep_fn
+        )
+        session_ride_id_cache[peloton_id] = session.get(SESSION_RIDE_ID_FIELD) if session is not None else None
+    ride_id = session_ride_id_cache[peloton_id]
+    if ride_id is None:
+        diagnostic_logger().warning(f"{PROVIDER}: class session lookup failed for peloton_id={peloton_id!r}")
         apply_class_metadata_update(conn, external_id, {"class_type": CLASS_TYPE_LOOKUP_FAILED})
         return "failed"
 
-    apply_class_metadata_update(
-        conn,
-        external_id,
-        {
-            "activity_title": details.get(CLASS_TITLE_FIELD),
-            "instructor_name": _extract_instructor_name(details),
-            "class_type": details.get(CLASS_TYPE_RAW_FIELD),
-            "planned_duration_s": details.get(PLANNED_DURATION_FIELD),
-            "provider_class_id": ride_id,
-        },
-    )
+    if ride_id not in ride_details_cache:
+        ride_details_cache[ride_id] = retry_with_backoff(
+            lambda: connector.fetch_class_details(ride_id), PROVIDER, max_retries=max_retries, sleep_fn=sleep_fn
+        )
+    details = ride_details_cache[ride_id]
+    if details is None:
+        diagnostic_logger().warning(
+            f"{PROVIDER}: ride-details lookup failed for ride_id={ride_id!r} (peloton_id={peloton_id!r})"
+        )
+        apply_class_metadata_update(conn, external_id, {"class_type": CLASS_TYPE_LOOKUP_FAILED})
+        return "failed"
+
+    apply_class_metadata_update(conn, external_id, _extract_ride_metadata(details, ride_id))
     return "success"
 
 
@@ -224,7 +236,9 @@ def _process_performance(
 
 
 def _process_row(
-    conn, connector: PelotonConnector, row: dict, retry_failed: bool, max_retries: int, sleep_fn
+    conn, connector: PelotonConnector, row: dict,
+    session_ride_id_cache: dict, ride_details_cache: dict,
+    retry_failed: bool, max_retries: int, sleep_fn,
 ) -> dict[str, str | None]:
     """Processes one candidate row's two independent concerns and commits
     once, regardless of which ran (AC6: resumability). Returns
@@ -232,7 +246,10 @@ def _process_row(
     raw = json.loads(row["payload_json"])
     external_id = row["external_id"]
 
-    class_outcome = _process_class_metadata(conn, connector, raw, external_id, row, retry_failed, max_retries, sleep_fn)
+    class_outcome = _process_class_metadata(
+        conn, connector, raw, external_id, row, session_ride_id_cache, ride_details_cache,
+        retry_failed, max_retries, sleep_fn,
+    )
     performance_outcome = _process_performance(conn, connector, external_id, row, retry_failed, max_retries, sleep_fn)
     conn.commit()
     return {"class": class_outcome, "performance": performance_outcome}
@@ -248,12 +265,20 @@ def run_backfill(conn, connector: PelotonConnector, retry_failed: bool = False, 
     sleep_fn = sleep_fn if sleep_fn is not None else _time.sleep
     rows = _select_candidates(conn, retry_failed, limit)
 
+    # Issue #58 (AC3): created once per invocation, not per row, so
+    # repeated classes across the whole run cost at most one call per
+    # distinct id — see module docstring, "Caching".
+    session_ride_id_cache: dict = {}
+    ride_details_cache: dict = {}
+
     counts = {
         "processed": 0, "not_a_class": 0, "success": 0, "failed": 0,
         "performance_success": 0, "performance_failed": 0,
     }
     for row in rows:
-        outcomes = _process_row(conn, connector, row, retry_failed, max_retries, sleep_fn)
+        outcomes = _process_row(
+            conn, connector, row, session_ride_id_cache, ride_details_cache, retry_failed, max_retries, sleep_fn
+        )
         if outcomes["class"] is None and outcomes["performance"] is None:
             continue  # selected by the OR'd query but nothing eligible here this run
         counts["processed"] += 1

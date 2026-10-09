@@ -156,9 +156,21 @@ metadata back to NULL), the backfill tool's resumability, and every
 test's shape — only the flagged constants' literal values, and (if
 `WORKOUT_TYPE_FIELD` turns out not to exist) `_is_class_workout()`'s
 already-coded fallback branch, would need to change.
-**Status:** Open — needs the BO (or whoever holds the manual bearer
-token) to run Task 1's live diagnostic and update the flagged constants
-accordingly, then close this item the way BL-008 was closed for issue #5.
+**Status:** Resolved (issue #58, 2026-10-09). Live, read-only testing
+against the BO's real account disproved the original plan entirely, rather
+than merely confirming field names: a workout's `peloton_id` is a class
+*session* id, not a ride id — `GET /api/ride/{peloton_id}/details`
+(the call this implementation made) 404s on it every time, which is why
+the #46 backfill failed for 131/131 class workouts in production. The
+fix is a two-step resolution: `GET /api/peloton/{peloton_id}` (new
+`fetch_class_session()`) returns the session object's real `ride_id`,
+which is THEN passed to the existing `GET /api/ride/{ride_id}/details`
+call (now called correctly). The live-verified response shape also
+corrected the field mapping: `class_types[].name` (top-level, comma-joined
+for multiple tags) replaces the old `CLASS_TYPE_RAW_FIELD`/`ride_type_id`
+guess, and `ride.difficulty_estimate` is persisted as a new nullable
+column (schema v7) since it's fetched at zero marginal cost. See
+`docs/trainiq/architecture/58-peloton-class-lookup-ride-id-resolution.md`.
 
 ### BL-009 — `weigh_ins` table has no `source_confidence` column
 **Raised:** Epic 6 implementation (Normalization Engine, slice 5), discovered

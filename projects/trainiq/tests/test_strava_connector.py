@@ -119,6 +119,10 @@ def _fake_activity(
     id_=123, start_date="2026-01-05T07:00:00+00:00", elapsed_time=3600,
     sport_type="Ride", type_="Ride", avg_hr=145.0, max_hr=168, avg_watts=210.0,
     max_watts=310, distance=30000.0, name="Afternoon Ride",
+    # Issue #48 defaults chosen to match today's implicit "ride, outdoor,
+    # has some elevation" shape, so every existing call site that doesn't
+    # care about these fields keeps its current behavior unchanged.
+    total_elevation_gain=100.0, moving_time=3500, trainer=False,
 ):
     return SimpleNamespace(
         id=id_,
@@ -132,6 +136,9 @@ def _fake_activity(
         max_watts=max_watts,
         distance=distance,
         name=name,
+        total_elevation_gain=total_elevation_gain,
+        moving_time=moving_time,
+        trainer=trainer,
     )
 
 
@@ -378,6 +385,79 @@ def test_normalize_handles_missing_hr_and_power_as_none_not_zero(credential_stor
     assert result["max_hr"] is None
     assert result["avg_power"] is None
     assert result["max_power"] is None
+
+
+# --- Issue #48: elevation gain, moving time, indoor/outdoor flag -----------
+# Mirrors the full round trip (_fake_activity -> _activity_to_raw_dict ->
+# normalize) rather than testing normalize() alone against a hand-built raw
+# dict — this is the test that would catch "fixed normalize() but forgot
+# _activity_to_raw_dict()", the mistake the requirements doc explicitly warns
+# about, since a hand-built raw dict would mask it.
+
+def test_outdoor_ride_with_elevation_round_trips_through_raw_dict_and_normalize(credential_store):
+    fake = FakeStravalibClient()
+    connector = StravaConnector(credential_store, stravalib_client=fake)
+    activity = _fake_activity(total_elevation_gain=245.0, moving_time=3500, trainer=False)
+
+    raw = connector._activity_to_raw_dict(activity)
+    result = connector.normalize(raw)
+
+    assert raw["total_elevation_gain"] == 245.0
+    assert raw["moving_time"] == 3500
+    assert raw["trainer"] is False
+    assert result["elevation_gain_m"] == 245.0
+    assert result["moving_time_s"] == 3500
+    assert result["is_indoor"] is False  # identity check, not just falsy
+
+
+def test_indoor_trainer_ride_round_trips_through_raw_dict_and_normalize(credential_store):
+    fake = FakeStravalibClient()
+    connector = StravaConnector(credential_store, stravalib_client=fake)
+    activity = _fake_activity(total_elevation_gain=0.0, moving_time=1800, trainer=True)
+
+    raw = connector._activity_to_raw_dict(activity)
+    result = connector.normalize(raw)
+
+    assert result["is_indoor"] is True  # identity check, not just truthy
+    assert result["elevation_gain_m"] == 0.0
+    assert result["moving_time_s"] == 1800
+
+
+def test_all_three_fields_missing_normalize_to_none_not_fabricated(credential_store):
+    """Guards against a `.get(..., False)`-style regression: when
+    stravalib reports None for all three attributes (e.g. an old row's raw
+    payload captured before this fix), the canonical fields must stay
+    None, never default to False/0."""
+    fake = FakeStravalibClient()
+    connector = StravaConnector(credential_store, stravalib_client=fake)
+    activity = _fake_activity(total_elevation_gain=None, moving_time=None, trainer=None)
+
+    raw = connector._activity_to_raw_dict(activity)
+    result = connector.normalize(raw)
+
+    assert raw["total_elevation_gain"] is None
+    assert raw["moving_time"] is None
+    assert raw["trainer"] is None
+    assert result["elevation_gain_m"] is None
+    assert result["moving_time_s"] is None
+    assert result["is_indoor"] is None
+
+
+def test_normalize_resolves_missing_new_keys_to_none_for_pre_fix_raw_rows(credential_store):
+    """renormalize_provider() must be able to re-process a raw_activities
+    row stored before this fix, whose stored payload genuinely lacks
+    total_elevation_gain/moving_time/trainer entirely — normalize() must
+    resolve those to None, not raise KeyError."""
+    fake = FakeStravalibClient()
+    connector = StravaConnector(credential_store, stravalib_client=fake)
+    raw = connector._activity_to_raw_dict(_fake_activity())
+    del raw["total_elevation_gain"], raw["moving_time"], raw["trainer"]
+
+    result = connector.normalize(raw)
+
+    assert result["elevation_gain_m"] is None
+    assert result["moving_time_s"] is None
+    assert result["is_indoor"] is None
 
 
 # --- End-to-end: StravaConnector through the real Synchronization Engine ---

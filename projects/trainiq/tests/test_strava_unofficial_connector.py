@@ -595,6 +595,63 @@ def test_normalize_sport_type_raw_falls_back_to_display_type(credential_store):
     assert result["sport_type_raw"] == "Run"
 
 
+# --- Issue #48: elevation gain, moving time, indoor/outdoor flag -----------
+
+def test_normalize_outdoor_activity_maps_elevation_and_moving_time_is_not_indoor(credential_store):
+    """Outdoor case: elevation_gain_raw present and non-zero, trainer:
+    False -> elevation_gain_m equals it, is_indoor is False (identity
+    check, not just falsy — 0 == False in Python would mask a bug that
+    stored 0 instead of the real boolean)."""
+    fake = FakeStravaUnofficialSession()
+    connector = StravaUnofficialConnector(credential_store, session=fake)
+    raw = {**_WEB_ACTIVITY_RECORD, "trainer": False}
+
+    result = connector.normalize(raw)
+
+    assert result["elevation_gain_m"] == 120.0
+    assert result["is_indoor"] is False
+    # moving_time_s must come from moving_time_raw, distinct from
+    # duration_s (which uses elapsed_time_raw) — guards against a
+    # copy-paste that maps both canonical fields from the same raw key.
+    assert result["moving_time_s"] == 3500
+    assert result["duration_s"] == 3600
+    assert result["moving_time_s"] != result["duration_s"]
+
+
+def test_normalize_indoor_trainer_ride_is_indoor_true(credential_store):
+    """Indoor trainer case: trainer: True, elevation_gain_raw absent or 0
+    -> is_indoor is True (identity check, not just truthy), elevation_gain_m
+    reflects whatever was given, never fabricated either way."""
+    fake = FakeStravaUnofficialSession()
+    connector = StravaUnofficialConnector(credential_store, session=fake)
+    raw = {**_WEB_ACTIVITY_RECORD, "trainer": True, "elevation_gain_raw": 0.0}
+
+    result = connector.normalize(raw)
+
+    assert result["is_indoor"] is True
+    assert result["elevation_gain_m"] == 0.0
+
+
+def test_normalize_all_three_fields_missing_resolve_to_none_not_fabricated(credential_store):
+    """Missing-everything case: a payload with none of elevation_gain_raw,
+    moving_time_raw, trainer present at all -> all three canonical fields
+    are None. This is the case that most directly guards against a
+    `.get(..., False)`-style regression creeping in later."""
+    fake = FakeStravaUnofficialSession()
+    connector = StravaUnofficialConnector(credential_store, session=fake)
+    raw = {
+        key: value
+        for key, value in _WEB_ACTIVITY_RECORD.items()
+        if key not in ("elevation_gain_raw", "moving_time_raw", "trainer")
+    }
+
+    result = connector.normalize(raw)
+
+    assert result["elevation_gain_m"] is None
+    assert result["moving_time_s"] is None
+    assert result["is_indoor"] is None
+
+
 # --- Issue #43: start_time field priority + timezone handling ------------------
 
 def test_normalize_bst_summer_payload_matches_peloton_epoch_for_same_ride(credential_store):
