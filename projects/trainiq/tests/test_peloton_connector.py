@@ -29,10 +29,12 @@ from trainiq.connectors.peloton import (
     OAUTH_TOKEN_URL,
     PROVIDER,
     RIDE_ID_FIELD,
+    SESSION_RIDE_ID_FIELD,
     WORKOUT_TYPE_FIELD,
     PelotonConnector,
     PelotonHTTPError,
     PelotonOAuthRejected,
+    _extract_ride_metadata,
     apply_class_metadata_update,
     generate_pkce_pair,
 )
@@ -837,7 +839,7 @@ def test_normalize_class_workout_with_full_metadata(credential_store):
         "fitness_discipline": "cycling", "total_work": 23646.98, "calories": 30.64,
         "_class_title": "Power Zone Max", "_instructor_name": "Matt Wilpers",
         "_class_type": "power_zone_max", "_planned_duration_s": 2700,
-        "_provider_class_id": "ride-abc",
+        "_provider_class_id": "ride-abc", "_difficulty_estimate": 8.40,
     }
 
     result = connector.normalize(raw)
@@ -847,6 +849,7 @@ def test_normalize_class_workout_with_full_metadata(credential_store):
     assert result["class_type"] == "power_zone_max"
     assert result["planned_duration_s"] == 2700
     assert result["provider_class_id"] == "ride-abc"
+    assert result["difficulty_estimate"] == 8.40
     assert result["duration_s"] == 299  # actual duration unaffected (AC1)
 
 
@@ -897,6 +900,7 @@ def test_normalize_workout_with_no_class_keys_at_all_yields_none_for_every_new_f
     assert result["class_type"] is None
     assert result["planned_duration_s"] is None
     assert result["provider_class_id"] is None
+    assert result["difficulty_estimate"] is None
 
 
 def _me_and_workouts_responses(workouts: list[dict]):
@@ -917,55 +921,99 @@ def _authenticated_connector(credential_store, fake):
     return connector
 
 
-def test_download_two_workouts_sharing_ride_id_fetches_class_details_once(credential_store):
+def _session_response(ride_id: str, **extra):
+    """A GET /api/peloton/{peloton_id} success body — live-evidence shape
+    from issue #58 (ride_id, scheduled_start_time, is_live, is_encore)."""
+    body = {"ride_id": ride_id, "scheduled_start_time": 1790000000, "is_live": False, "is_encore": False}
+    body.update(extra)
+    return FakeResponse(200, body)
+
+
+def _ride_details_response(title: str, duration: int, class_type_names: list[str] | None = None, **extra_ride):
+    """A GET /api/ride/{ride_id}/details success body — live-evidence shape
+    from issue #58: `ride` is nested, `class_types` is a top-level sibling."""
+    ride = {"title": title, "duration": duration, "instructor": {"name": "Matt Wilpers"}, **extra_ride}
+    class_types = [{"name": name} for name in (class_type_names or ["Power Zone"])]
+    return FakeResponse(200, {"ride": ride, "class_types": class_types, "is_power_zone_class": True})
+
+
+def test_download_two_workouts_sharing_ride_id_fetches_ride_details_once(credential_store):
+    """Issue #58, AC3: two different peloton_ids (two attendances) that
+    resolve to the same ride_id must still cost only one ride-details call
+    — two session-resolution calls (one per distinct peloton_id), one
+    ride-details call (one per distinct resolved ride_id)."""
     workouts = [
-        {"id": "w1", WORKOUT_TYPE_FIELD: "class", RIDE_ID_FIELD: "ride-1", "start_time": 2000},
-        {"id": "w2", WORKOUT_TYPE_FIELD: "class", RIDE_ID_FIELD: "ride-1", "start_time": 3000},
+        {"id": "w1", WORKOUT_TYPE_FIELD: "class", RIDE_ID_FIELD: "session-1", "start_time": 2000},
+        {"id": "w2", WORKOUT_TYPE_FIELD: "class", RIDE_ID_FIELD: "session-2", "start_time": 3000},
     ]
     fake = _me_and_workouts_responses(workouts)
-    fake.script_get_response(FakeResponse(200, {"title": "Power Zone Max", "duration": 2700}))
+    fake.script_get_response(_session_response("ride-1"))  # resolves w1's session-1
+    fake.script_get_response(_ride_details_response("Power Zone Max", 2700))  # first-seen ride-1
+    fake.script_get_response(_session_response("ride-1"))  # resolves w2's session-2
     connector = _authenticated_connector(credential_store, fake)
 
     result = connector.download(since="1000")
 
-    assert len(fake.get_calls) == 3  # /me, /workouts, exactly one ride-detail call
+    assert len(fake.get_calls) == 5  # /me, /workouts, 2 session calls, exactly 1 ride-detail call
     assert result[0]["_class_title"] == "Power Zone Max"
     assert result[1]["_class_title"] == "Power Zone Max"
     assert result[0]["_provider_class_id"] == "ride-1"
 
 
+def test_download_same_peloton_id_twice_resolves_session_once(credential_store):
+    """Issue #58, AC3: the same peloton_id seen twice costs only one
+    session-resolution call."""
+    workouts = [
+        {"id": "w1", WORKOUT_TYPE_FIELD: "class", RIDE_ID_FIELD: "session-1", "start_time": 2000},
+        {"id": "w2", WORKOUT_TYPE_FIELD: "class", RIDE_ID_FIELD: "session-1", "start_time": 3000},
+    ]
+    fake = _me_and_workouts_responses(workouts)
+    fake.script_get_response(_session_response("ride-1"))
+    fake.script_get_response(_ride_details_response("Power Zone Max", 2700))
+    connector = _authenticated_connector(credential_store, fake)
+
+    result = connector.download(since="1000")
+
+    assert len(fake.get_calls) == 4  # /me, /workouts, 1 session call, 1 ride-detail call
+    assert result[1]["_class_title"] == "Power Zone Max"
+
+
 def test_download_class_workout_older_than_since_is_not_fetched(credential_store):
-    workouts = [{"id": "w1", WORKOUT_TYPE_FIELD: "class", RIDE_ID_FIELD: "ride-1", "start_time": 500}]
+    workouts = [{"id": "w1", WORKOUT_TYPE_FIELD: "class", RIDE_ID_FIELD: "session-1", "start_time": 500}]
     fake = _me_and_workouts_responses(workouts)
     connector = _authenticated_connector(credential_store, fake)
 
     result = connector.download(since="1000")
 
-    assert len(fake.get_calls) == 2  # /me, /workouts — no ride-detail call at all
+    assert len(fake.get_calls) == 2  # /me, /workouts — no lookup call at all
     assert "_class_type" not in result[0]
     assert "_class_title" not in result[0]
 
 
 def test_download_class_workout_with_since_none_is_always_attempted(credential_store):
-    workouts = [{"id": "w1", WORKOUT_TYPE_FIELD: "class", RIDE_ID_FIELD: "ride-1", "start_time": 500}]
+    workouts = [{"id": "w1", WORKOUT_TYPE_FIELD: "class", RIDE_ID_FIELD: "session-1", "start_time": 500}]
     fake = _me_and_workouts_responses(workouts)
-    fake.script_get_response(FakeResponse(200, {"title": "Endurance", "duration": 1800}))
+    fake.script_get_response(_session_response("ride-1"))
+    fake.script_get_response(_ride_details_response("Endurance", 1800))
     connector = _authenticated_connector(credential_store, fake)
 
     result = connector.download(since=None)
 
-    assert len(fake.get_calls) == 3
+    assert len(fake.get_calls) == 4
     assert result[0]["_class_title"] == "Endurance"
 
 
-def test_download_class_lookup_404_sets_lookup_failed_and_logs(credential_store):
-    """Loguru, not stdlib logging — caplog doesn't capture it (see
+def test_download_session_lookup_404_sets_lookup_failed_and_logs_without_fetching_ride_details(credential_store):
+    """Issue #58, AC4/AC8: a 404 at the session-resolution step (the
+    literal old-bug scenario — a session id can't be resolved) must stop
+    before the ride-details call, distinguishable from a ride-details
+    failure. Loguru, not stdlib logging — caplog doesn't capture it (see
     test_sync_engine.py's test_connector_declaring_no_incremental_support_logs_explanatory_note
     for the established pattern this follows)."""
     import io
     from loguru import logger
 
-    workouts = [{"id": "w1", WORKOUT_TYPE_FIELD: "class", RIDE_ID_FIELD: "ride-1", "start_time": 2000}]
+    workouts = [{"id": "w1", WORKOUT_TYPE_FIELD: "class", RIDE_ID_FIELD: "session-1", "start_time": 2000}]
     fake = _me_and_workouts_responses(workouts)
     fake.script_get_response(FakeResponse(404, {}))
     connector = _authenticated_connector(credential_store, fake)
@@ -978,12 +1026,51 @@ def test_download_class_lookup_404_sets_lookup_failed_and_logs(credential_store)
         logger.remove(handler_id)
 
     assert result[0]["_class_type"] == CLASS_TYPE_LOOKUP_FAILED
-    assert "class lookup failed" in log_stream.getvalue()
+    assert "class session lookup failed" in log_stream.getvalue()
+    assert len(fake.get_calls) == 3  # /me, /workouts, the failed session call — never a ride-detail call
 
 
-def test_download_class_lookup_rate_limited_propagates_transient_error(credential_store):
-    workouts = [{"id": "w1", WORKOUT_TYPE_FIELD: "class", RIDE_ID_FIELD: "ride-1", "start_time": 2000}]
+def test_download_ride_details_404_after_successful_session_resolution_sets_lookup_failed_and_logs(credential_store):
+    """Issue #58, AC4/AC8: a failure at the SECOND step, distinguishable
+    from the session-resolution failure above — the session resolves fine,
+    but the resolved ride_id's details fetch 404s."""
+    import io
+    from loguru import logger
+
+    workouts = [{"id": "w1", WORKOUT_TYPE_FIELD: "class", RIDE_ID_FIELD: "session-1", "start_time": 2000}]
     fake = _me_and_workouts_responses(workouts)
+    fake.script_get_response(_session_response("ride-1"))
+    fake.script_get_response(FakeResponse(404, {}))
+    connector = _authenticated_connector(credential_store, fake)
+
+    log_stream = io.StringIO()
+    handler_id = logger.add(log_stream, format="{message}")
+    try:
+        result = connector.download(since="1000")
+    finally:
+        logger.remove(handler_id)
+
+    assert result[0]["_class_type"] == CLASS_TYPE_LOOKUP_FAILED
+    assert "ride-details lookup failed" in log_stream.getvalue()
+    assert "ride_id='ride-1'" in log_stream.getvalue()
+    assert "peloton_id='session-1'" in log_stream.getvalue()
+
+
+def test_download_session_lookup_rate_limited_propagates_transient_error(credential_store):
+    workouts = [{"id": "w1", WORKOUT_TYPE_FIELD: "class", RIDE_ID_FIELD: "session-1", "start_time": 2000}]
+    fake = _me_and_workouts_responses(workouts)
+    fake.script_get_response(FakeResponse(429, {}, headers={"Retry-After": "30"}))
+    connector = _authenticated_connector(credential_store, fake)
+
+    with pytest.raises(TransientError) as excinfo:
+        connector.download(since="1000")
+    assert excinfo.value.retry_after_s == 30.0
+
+
+def test_download_ride_details_rate_limited_propagates_transient_error(credential_store):
+    workouts = [{"id": "w1", WORKOUT_TYPE_FIELD: "class", RIDE_ID_FIELD: "session-1", "start_time": 2000}]
+    fake = _me_and_workouts_responses(workouts)
+    fake.script_get_response(_session_response("ride-1"))
     fake.script_get_response(FakeResponse(429, {}, headers={"Retry-After": "30"}))
     connector = _authenticated_connector(credential_store, fake)
 
@@ -1000,12 +1087,121 @@ def test_download_non_class_workout_gets_not_a_class_sentinel_no_network_call(cr
     result = connector.download(since="1000")
 
     assert result[0]["_class_type"] == CLASS_TYPE_NOT_A_CLASS
-    assert len(fake.get_calls) == 2  # no ride-detail call
+    assert len(fake.get_calls) == 2  # no lookup call
+
+
+def test_download_populates_difficulty_estimate(credential_store):
+    workouts = [{"id": "w1", WORKOUT_TYPE_FIELD: "class", RIDE_ID_FIELD: "session-1", "start_time": 2000}]
+    fake = _me_and_workouts_responses(workouts)
+    fake.script_get_response(_session_response("ride-1"))
+    fake.script_get_response(_ride_details_response("Power Zone Max", 2700, difficulty_estimate=8.40))
+    connector = _authenticated_connector(credential_store, fake)
+
+    result = connector.download(since="1000")
+
+    assert result[0]["_difficulty_estimate"] == 8.40
+
+
+# --- Issue #58: fetch_class_session() (resolves BL-011) ---------------------
+
+def test_fetch_class_session_success_returns_parsed_session_dict(credential_store):
+    fake = FakePelotonSession()
+    fake.script_get_response(_session_response("ride-1", is_live=True))
+    connector = PelotonConnector(credential_store, session=fake)
+    connector._active_auth_header = {"Cookie": "peloton_session_id=x"}
+
+    session = connector.fetch_class_session("session-1")
+
+    assert session[SESSION_RIDE_ID_FIELD] == "ride-1"
+    assert session["is_live"] is True
+
+
+def test_fetch_class_session_404_returns_none(credential_store):
+    """The literal old-bug scenario: a workout's peloton_id is a session
+    id, so calling the OLD ride-detail endpoint directly with it 404s
+    (documented by the regression test below); this endpoint is what
+    correctly resolves that session id instead."""
+    fake = FakePelotonSession()
+    fake.script_get_response(FakeResponse(404, {}))
+    connector = PelotonConnector(credential_store, session=fake)
+    connector._active_auth_header = {"Cookie": "peloton_session_id=x"}
+
+    assert connector.fetch_class_session("session-1") is None
+
+
+def test_regression_old_bug_session_id_used_directly_as_ride_id_404s(credential_store):
+    """Issue #58, AC8: proves the OLD call pattern (passing a workout's
+    peloton_id straight into fetch_class_details(), as #46's download()
+    did) fails — this is exactly why step 1 (fetch_class_session()) must
+    run first. Must never regress to calling fetch_class_details() with an
+    unresolved peloton_id again."""
+    fake = FakePelotonSession()
+    fake.script_get_response(FakeResponse(404, {}))
+    connector = PelotonConnector(credential_store, session=fake)
+    connector._active_auth_header = {"Cookie": "peloton_session_id=x"}
+
+    session_id_mistaken_for_ride_id = "session-1"
+    assert connector.fetch_class_details(session_id_mistaken_for_ride_id) is None
+
+
+# --- Issue #58: _extract_ride_metadata() (resolves BL-011) ------------------
+
+def test_extract_ride_metadata_maps_all_six_fields():
+    details = {
+        "ride": {
+            "title": "45 min Power Zone Max Ride", "duration": 2700,
+            "difficulty_estimate": 8.40, "instructor": {"name": "Matt Wilpers"}, "instructor_id": "i1",
+        },
+        "class_types": [{"name": "Power Zone"}],
+        "is_power_zone_class": True,
+    }
+
+    result = _extract_ride_metadata(details, "ride-1")
+
+    assert result == {
+        "activity_title": "45 min Power Zone Max Ride",
+        "instructor_name": "Matt Wilpers",
+        "class_type": "Power Zone",
+        "planned_duration_s": 2700,
+        "provider_class_id": "ride-1",
+        "difficulty_estimate": 8.40,
+    }
+
+
+def test_extract_ride_metadata_multiple_class_types_comma_joined():
+    details = {"ride": {"title": "Tabata Ride", "duration": 1800}, "class_types": [{"name": "Power Zone"}, {"name": "Tabata"}]}
+
+    result = _extract_ride_metadata(details, "ride-2")
+
+    assert result["class_type"] == "Power Zone, Tabata"
+
+
+def test_extract_ride_metadata_empty_class_types_is_empty_string_not_none():
+    """The COALESCE-contract edge case: a genuinely successful lookup with
+    zero tags must store "", never None — None is reserved for "not
+    attempted this pass" (see peloton.py's _extract_ride_metadata()
+    docstring and the architecture doc's "None-means-not-attempted
+    contract"). A future "simplification" to e.g. class_types[0]["name"]
+    would silently reintroduce this hazard; this test guards against it."""
+    details = {"ride": {"title": "Just Ride", "duration": 1200}, "class_types": []}
+
+    result = _extract_ride_metadata(details, "ride-3")
+
+    assert result["class_type"] == ""
+    assert result["class_type"] is not None
+
+
+def test_extract_ride_metadata_missing_instructor_is_none_not_an_error():
+    details = {"ride": {"title": "Scenic Ride", "duration": 1800}, "class_types": []}
+
+    result = _extract_ride_metadata(details, "ride-4")
+
+    assert result["instructor_name"] is None
 
 
 # --- Issue #46: apply_class_metadata_update() --------------------------
 
-def test_apply_class_metadata_update_sets_only_the_five_columns(db):
+def test_apply_class_metadata_update_sets_only_the_six_columns(db):
     db.execute(
         """
         INSERT INTO normalized_activities
@@ -1020,6 +1216,7 @@ def test_apply_class_metadata_update_sets_only_the_five_columns(db):
         {
             "activity_title": "Power Zone Max", "instructor_name": "Matt Wilpers",
             "class_type": "power_zone_max", "planned_duration_s": 2700, "provider_class_id": "ride-1",
+            "difficulty_estimate": 8.40,
         },
     )
     db.commit()
@@ -1032,6 +1229,7 @@ def test_apply_class_metadata_update_sets_only_the_five_columns(db):
     assert row["class_type"] == "power_zone_max"
     assert row["planned_duration_s"] == 2700
     assert row["provider_class_id"] == "ride-1"
+    assert row["difficulty_estimate"] == 8.40
     assert row["discipline"] == "cycling"  # untouched
 
 
