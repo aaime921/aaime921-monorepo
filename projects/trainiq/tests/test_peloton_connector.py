@@ -551,6 +551,59 @@ def test_download_missing_account_unit_field_attaches_none_not_omitted(credentia
     assert workouts == [{"id": "w1", "_distance_unit": None, "_class_type": "not_a_class"}]
 
 
+# --- Issue #47, AC1: effort_zones. Unlike every other connector-internal
+# field in this module, download() does NOT attach an underscore-prefixed
+# key for this one — normalize() reads `effort_zones` straight off the raw
+# workout dict (see peloton.py's Feature 3.7 docstring for why: zero extra
+# network cost, and this makes renormalize_provider() backfill it for
+# free). download() itself just needs to pass `effort_zones` through
+# unmodified, which these tests pin.
+
+def test_download_passes_effort_zones_through_unmodified(credential_store):
+    credential_store.set(PROVIDER, CRED_EMAIL, "a@b.com")
+    credential_store.set(PROVIDER, CRED_PASSWORD, "pw")
+    fake = FakePelotonSession()
+    fake.script_post_response(_login_success_response())
+    fake.script_get_response(FakeResponse(200, {"id": "u1"}))
+    effort_zones = {
+        "total_effort_points": 39.9,
+        "heart_rate_zone_durations": {
+            "heart_rate_z1_duration": 0, "heart_rate_z2_duration": 119,
+            "heart_rate_z3_duration": 220, "heart_rate_z4_duration": 858,
+            "heart_rate_z5_duration": 0,
+        },
+    }
+    fake.script_get_response(FakeResponse(200, {"data": [{"id": "w1", "effort_zones": effort_zones}], "show_next": False}))
+    connector = PelotonConnector(credential_store, session=fake)
+    connector.authenticate()
+
+    workouts = connector.download()
+
+    assert workouts[0]["effort_zones"] == effort_zones
+
+
+def test_download_passes_effort_zones_through_even_for_a_workout_older_than_since(credential_store):
+    """Unlike the class-detail fetch (#46) and the eventual performance
+    fetch (#47 AC2), effort_zones costs zero extra network calls and is
+    never gated on the sync checkpoint — download() must pass it through
+    for every workout, including ones otherwise skipped as already-synced."""
+    credential_store.set(PROVIDER, CRED_EMAIL, "a@b.com")
+    credential_store.set(PROVIDER, CRED_PASSWORD, "pw")
+    fake = FakePelotonSession()
+    fake.script_post_response(_login_success_response())
+    fake.script_get_response(FakeResponse(200, {"id": "u1"}))
+    effort_zones = {"total_effort_points": 10.0, "heart_rate_zone_durations": {"heart_rate_z1_duration": 5}}
+    fake.script_get_response(FakeResponse(200, {"data": [{
+        "id": "w1", "start_time": 1000, "effort_zones": effort_zones,
+    }], "show_next": False}))
+    connector = PelotonConnector(credential_store, session=fake)
+    connector.authenticate()
+
+    workouts = connector.download(since="2000")  # older than this workout's start_time
+
+    assert workouts[0]["effort_zones"] == effort_zones
+
+
 def test_download_rate_limited_honors_retry_after(credential_store):
     credential_store.set(PROVIDER, CRED_EMAIL, "a@b.com")
     credential_store.set(PROVIDER, CRED_PASSWORD, "pw")
@@ -647,10 +700,13 @@ def test_normalize_effort_zones_null_is_handled_as_absent_not_an_error(credentia
 
 
 def test_normalize_effort_zones_populated_still_never_fabricates_hr_or_max_power(credential_store):
-    """Issue #5 AC6/AC7: avg_hr/max_hr/max_power are always None, even when
-    effort_zones carries real per-zone HR duration data — that data is not
-    a plain avg/max bpm and must not be mapped in, per the never-fabricate
-    standard (this issue's scope excludes surfacing it under new fields)."""
+    """Issue #5 AC6/AC7, unchanged by issue #47 AC1: avg_hr/max_hr/max_power
+    are always None, even when effort_zones carries real per-zone HR
+    duration data — that data is not a plain avg/max bpm and must not be
+    mapped into those fields, per the never-fabricate standard. AC1 surfaces
+    the SAME data under its own dedicated fields instead (see the download()
+    fixture tests below) — this test only pins the three fields that remain
+    genuinely unavailable until AC2's performance-endpoint fetch lands."""
     fake = FakePelotonSession()
     connector = PelotonConnector(credential_store, session=fake)
 
@@ -659,6 +715,69 @@ def test_normalize_effort_zones_populated_still_never_fabricates_hr_or_max_power
     assert result["avg_hr"] is None
     assert result["max_hr"] is None
     assert result["max_power"] is None
+
+
+# --- Issue #47, AC1: hr_zone_1_s..hr_zone_5_s, effort_points. CONFIRMED
+# field names (docs/trainiq/verification/peloton-2026-09-28.md) — no Task 1
+# dependency, unlike AC2's avg_hr/max_hr/max_power/performance endpoint.
+
+def test_normalize_new_hr_zone_and_effort_fields_null_when_effort_zones_is_null(credential_store):
+    """`effort_zones: null` (confirmed to occur, see
+    docs/trainiq/verification/peloton-2026-09-28.md) -> every one of the 6
+    new fields is None, never zero."""
+    fake = FakePelotonSession()
+    connector = PelotonConnector(credential_store, session=fake)
+
+    result = connector.normalize(_REAL_RECORD_NO_EFFORT_ZONES)
+
+    assert result["hr_zone_1_s"] is None
+    assert result["hr_zone_2_s"] is None
+    assert result["hr_zone_3_s"] is None
+    assert result["hr_zone_4_s"] is None
+    assert result["hr_zone_5_s"] is None
+    assert result["effort_points"] is None
+
+
+def test_normalize_new_hr_zone_and_effort_fields_read_straight_off_effort_zones(credential_store):
+    """DEVIATION from the architecture doc (see peloton.py's Feature 3.7
+    docstring): normalize() reads `effort_zones` directly off `raw`, not
+    via a download()-attached underscore key — so the real captured record
+    (already carrying `effort_zones` verbatim) is enough on its own, with
+    no additional connector-internal keys needed."""
+    fake = FakePelotonSession()
+    connector = PelotonConnector(credential_store, session=fake)
+
+    result = connector.normalize(_REAL_RECORD_WITH_EFFORT_ZONES)
+
+    assert result["hr_zone_1_s"] == 0
+    assert result["hr_zone_2_s"] == 119
+    assert result["hr_zone_3_s"] == 220
+    assert result["hr_zone_4_s"] == 858
+    assert result["hr_zone_5_s"] == 0
+    assert result["effort_points"] == pytest.approx(39.9)
+
+
+def test_normalize_hr_zone_data_present_even_with_partial_zone_durations(credential_store):
+    """A real response might not carry every zone key (e.g. a workout with
+    zero time in z5 could plausibly omit that key rather than send 0) —
+    missing individual zone keys must independently yield None, not crash
+    or default the whole block to None."""
+    fake = FakePelotonSession()
+    connector = PelotonConnector(credential_store, session=fake)
+    raw = {
+        **_REAL_RECORD_NO_EFFORT_ZONES,
+        "effort_zones": {
+            "total_effort_points": 12.5,
+            "heart_rate_zone_durations": {"heart_rate_z1_duration": 100},
+        },
+    }
+
+    result = connector.normalize(raw)
+
+    assert result["hr_zone_1_s"] == 100
+    assert result["hr_zone_2_s"] is None
+    assert result["hr_zone_5_s"] is None
+    assert result["effort_points"] == pytest.approx(12.5)
 
 
 def test_normalize_missing_end_time_yields_none_duration_no_exception(credential_store):

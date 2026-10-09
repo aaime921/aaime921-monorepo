@@ -25,7 +25,7 @@ from pathlib import Path
 
 from trainiq.storage.backfill import backfill_weigh_in_plausibility, decouple_weigh_in_plausibility
 
-CURRENT_SCHEMA_VERSION = 6
+CURRENT_SCHEMA_VERSION = 7
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -177,6 +177,24 @@ _MIGRATIONS: dict[int, str] = {
         ALTER TABLE normalized_activities ADD COLUMN planned_duration_s INTEGER;
         ALTER TABLE normalized_activities ADD COLUMN provider_class_id TEXT;
         ALTER TABLE normalized_activities ADD COLUMN sport_type_raw TEXT;
+    """,
+    # Issue #47, AC1 only: HR-zone durations (z1-z5, seconds) and Peloton's
+    # own effort-points score. Sourced from `effort_zones` on the SAME
+    # list-endpoint record download() already fetches every pass (no new
+    # network call) — unlike #46's 6 columns above, these have no "didn't
+    # attempt this pass" case, so they're unconditional-overwrite in
+    # upsert_normalized_activity(), not COALESCE. AC2 of #47 (avg_hr/max_hr/
+    # max_power via the separate, still-UNCONFIRMED performance endpoint)
+    # is explicitly out of this migration — see
+    # docs/trainiq/architecture/47-peloton-heart-rate-capture.md's Task 1.
+    # Renumbered 6 -> 7 per the BO's note on issue #47 (Issue #46 took v6).
+    7: """
+        ALTER TABLE normalized_activities ADD COLUMN hr_zone_1_s INTEGER;
+        ALTER TABLE normalized_activities ADD COLUMN hr_zone_2_s INTEGER;
+        ALTER TABLE normalized_activities ADD COLUMN hr_zone_3_s INTEGER;
+        ALTER TABLE normalized_activities ADD COLUMN hr_zone_4_s INTEGER;
+        ALTER TABLE normalized_activities ADD COLUMN hr_zone_5_s INTEGER;
+        ALTER TABLE normalized_activities ADD COLUMN effort_points REAL;
     """,
 }
 

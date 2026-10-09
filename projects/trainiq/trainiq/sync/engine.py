@@ -148,7 +148,14 @@ def upsert_normalized_activity(conn: sqlite3.Connection, record: dict) -> str:
     every pre-existing column keeps today's unconditional-overwrite
     behavior exactly as-is (correct for them: they're always fully
     re-derivable from the raw payload alone, with no "didn't attempt"
-    case). This is load-bearing, not cosmetic: re-running
+    case). Issue #47's 6 AC1 columns (hr_zone_1_s through effort_points)
+    join that unconditional-overwrite group, not the COALESCE one — they
+    come from the same already-fetched record as every pre-existing
+    column, with no "didn't attempt this pass" case either (see
+    peloton.py's Feature 3.7 docstring).
+
+    The COALESCE treatment for #46's 6 columns is load-bearing, not
+    cosmetic: re-running
     renormalize_provider() for Peloton calls connector.normalize() against
     an already-stored raw payload with zero new network I/O, so a
     class-detail lookup is never retried there — without COALESCE, that
@@ -165,8 +172,9 @@ def upsert_normalized_activity(conn: sqlite3.Connection, record: dict) -> str:
              avg_hr, max_hr, avg_power, max_power, calories,
              training_load, training_load_method, source_confidence,
              activity_title, instructor_name, class_type, planned_duration_s,
-             provider_class_id, sport_type_raw)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             provider_class_id, sport_type_raw,
+             hr_zone_1_s, hr_zone_2_s, hr_zone_3_s, hr_zone_4_s, hr_zone_5_s, effort_points)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             record["provider"], record["external_id"], record["start_time"], record["duration_s"],
@@ -175,6 +183,8 @@ def upsert_normalized_activity(conn: sqlite3.Connection, record: dict) -> str:
             record["training_load"], record["training_load_method"], record["source_confidence"],
             record.get("activity_title"), record.get("instructor_name"), record.get("class_type"),
             record.get("planned_duration_s"), record.get("provider_class_id"), record.get("sport_type_raw"),
+            record.get("hr_zone_1_s"), record.get("hr_zone_2_s"), record.get("hr_zone_3_s"),
+            record.get("hr_zone_4_s"), record.get("hr_zone_5_s"), record.get("effort_points"),
         ),
     )
     if cursor.rowcount == 1:
@@ -191,7 +201,9 @@ def upsert_normalized_activity(conn: sqlite3.Connection, record: dict) -> str:
             class_type = COALESCE(?, class_type),
             planned_duration_s = COALESCE(?, planned_duration_s),
             provider_class_id = COALESCE(?, provider_class_id),
-            sport_type_raw = COALESCE(?, sport_type_raw)
+            sport_type_raw = COALESCE(?, sport_type_raw),
+            hr_zone_1_s = ?, hr_zone_2_s = ?, hr_zone_3_s = ?, hr_zone_4_s = ?, hr_zone_5_s = ?,
+            effort_points = ?
         WHERE provider = ? AND external_id = ?
         """,
         (
@@ -201,6 +213,8 @@ def upsert_normalized_activity(conn: sqlite3.Connection, record: dict) -> str:
             record["source_confidence"],
             record.get("activity_title"), record.get("instructor_name"), record.get("class_type"),
             record.get("planned_duration_s"), record.get("provider_class_id"), record.get("sport_type_raw"),
+            record.get("hr_zone_1_s"), record.get("hr_zone_2_s"), record.get("hr_zone_3_s"),
+            record.get("hr_zone_4_s"), record.get("hr_zone_5_s"), record.get("effort_points"),
             record["provider"], record["external_id"],
         ),
     )

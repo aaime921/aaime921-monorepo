@@ -79,6 +79,16 @@ def _build_activity_record(
         "planned_duration_s": normalized.get("planned_duration_s"),
         "provider_class_id": normalized.get("provider_class_id"),
         "sport_type_raw": normalized.get("sport_type_raw"),
+        # Issue #47, AC1: same pass-through-verbatim treatment as the #46
+        # fields above — absence (None) is meaningful (null effort_zones,
+        # or a raw payload that predates this feature) and must reach
+        # upsert_normalized_activity() unchanged.
+        "hr_zone_1_s": normalized.get("hr_zone_1_s"),
+        "hr_zone_2_s": normalized.get("hr_zone_2_s"),
+        "hr_zone_3_s": normalized.get("hr_zone_3_s"),
+        "hr_zone_4_s": normalized.get("hr_zone_4_s"),
+        "hr_zone_5_s": normalized.get("hr_zone_5_s"),
+        "effort_points": normalized.get("effort_points"),
     }
 
 

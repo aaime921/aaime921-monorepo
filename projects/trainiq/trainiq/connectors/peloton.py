@@ -88,6 +88,48 @@ Feature 3.6 (issue #46 — class title/instructor/class type/planned length):
   verification eventually finds — only the constants themselves, and
   `_is_class_workout()`'s fallback branch, would need to change. See
   BACKLOG.md BL-011.
+
+Feature 3.7 (issue #47, AC1 only — HR-zone durations + effort points):
+  `normalize()` now also reads `effort_zones.heart_rate_zone_durations`
+  (z1-z5 seconds) and `effort_zones.total_effort_points` off the SAME
+  list-endpoint record already fetched above (issue #5) — CONFIRMED,
+  live-verified field names (docs/trainiq/verification/peloton-2026-09-28.md's
+  second example record), unlike #46's constants above. `effort_zones:
+  null` (also confirmed to occur, same verification file's first record)
+  means every one of these fields stays NULL, never zero or fabricated.
+
+  DEVIATION from docs/trainiq/architecture/47-peloton-heart-rate-capture.md's
+  literal code sample, flagged here per docs/trainiq/roles/developer.md
+  ("if you need to deviate, explain why"): the architecture doc has
+  download() attach these as connector-internal `_hr_zone_*_s` keys (the
+  #45/#46 pattern), with normalize() reading those. This implementation
+  instead has normalize() read `effort_zones` straight off `raw`, with no
+  download()-side step at all. Reason: `effort_zones` is already sitting
+  on the raw payload verbatim with zero extra network cost — unlike every
+  other connector-internal key this project uses the underscore-prefix
+  pattern for (_class_title, _avg_hr, _distance_unit, ...), there is no
+  "fetch result to smuggle through a dict" here, so the indirection buys
+  nothing. It actively costs something: the architecture's own AC4 backfill
+  script only re-parses already-stored raw_activities payloads for class
+  metadata and the (future) performance endpoint, never for zone data — had
+  normalize() depended on a download()-only key, the existing 136 workouts'
+  zone data could never be backfilled by ANY mechanism (not the backfill
+  script, and not trainiq.normalization.renormalize's existing
+  renormalize_provider(), which calls connector.normalize() directly against
+  stored raw payloads with no new network I/O — see that module's
+  docstring). Reading `effort_zones` directly in normalize() instead means
+  renormalize_provider() backfills all 136 existing Peloton workouts' zone
+  data for free, with no new script needed for AC4's "fields in ACs 1-2"
+  coverage of AC1 specifically.
+
+  AC2 of #47 (avg_hr/max_hr/max_power from a separate, still-UNCONFIRMED
+  per-workout performance endpoint) is explicitly OUT of this change — see
+  the architecture doc's Task 1, a mandatory, blocking live-verification
+  step this sandboxed routine cannot run (no network path to
+  api.onepeloton.com). avg_hr/max_hr/max_power below remain hardcoded None
+  until that verification lands; AC2's own backfill (once implemented) will
+  still need the architecture's performance-endpoint branch, unaffected by
+  this deviation.
 """
 
 from __future__ import annotations
@@ -245,6 +287,21 @@ INSTRUCTOR_OBJECT_FIELD = "instructor"  # UNCONFIRMED nesting — Task 1 may fin
 INSTRUCTOR_NAME_FIELD = "name"
 CLASS_TYPE_RAW_FIELD = "ride_type_id"   # or whatever Task 1 actually finds
 PLANNED_DURATION_FIELD = "duration"     # seconds
+
+# Issue #47, AC1 — CONFIRMED, live-verified (docs/trainiq/verification/
+# peloton-2026-09-28.md's second example record). Unlike the #46 constants
+# above, no Task 1 dependency: these sit on the same list-endpoint record
+# download() already walks, with the exact field names this evidence shows.
+EFFORT_ZONES_FIELD = "effort_zones"
+HR_ZONE_DURATIONS_FIELD = "heart_rate_zone_durations"
+TOTAL_EFFORT_POINTS_FIELD = "total_effort_points"
+HR_ZONE_DURATION_FIELDS: dict[int, str] = {
+    1: "heart_rate_z1_duration",
+    2: "heart_rate_z2_duration",
+    3: "heart_rate_z3_duration",
+    4: "heart_rate_z4_duration",
+    5: "heart_rate_z5_duration",
+}
 
 
 def _is_class_workout(raw: dict[str, Any]) -> bool:
@@ -703,6 +760,21 @@ class PelotonConnector(Connector):
         else:
             distance_m = None
 
+        # Issue #47, AC1: read straight off `raw` (not a download()-attached
+        # underscore key — see Feature 3.7's module docstring for why).
+        # `effort_zones: null` (confirmed to occur) -> every one of these 6
+        # fields is None, never zero.
+        effort_zones = raw.get(EFFORT_ZONES_FIELD)
+        if effort_zones is not None:
+            zone_durations = effort_zones.get(HR_ZONE_DURATIONS_FIELD) or {}
+            hr_zone_seconds = {
+                zone_n: zone_durations.get(zone_key) for zone_n, zone_key in HR_ZONE_DURATION_FIELDS.items()
+            }
+            effort_points = effort_zones.get(TOTAL_EFFORT_POINTS_FIELD)
+        else:
+            hr_zone_seconds = {zone_n: None for zone_n in HR_ZONE_DURATION_FIELDS}
+            effort_points = None
+
         return {
             "provider": PROVIDER,
             "external_id": str(raw["id"]),
@@ -742,6 +814,12 @@ class PelotonConnector(Connector):
             "class_type": raw.get("_class_type"),
             "planned_duration_s": raw.get("_planned_duration_s"),
             "provider_class_id": raw.get("_provider_class_id"),
+            "hr_zone_1_s": hr_zone_seconds[1],
+            "hr_zone_2_s": hr_zone_seconds[2],
+            "hr_zone_3_s": hr_zone_seconds[3],
+            "hr_zone_4_s": hr_zone_seconds[4],
+            "hr_zone_5_s": hr_zone_seconds[5],
+            "effort_points": effort_points,
         }
 
     def extract_resume_cursor(self, normalized: dict[str, Any]) -> str | None:

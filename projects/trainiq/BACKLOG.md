@@ -37,6 +37,52 @@ scoped as its own slice/ADR, not assumed to already be covered here.
 
 ## OPEN
 
+### BL-012 — Peloton per-workout performance endpoint (avg/max HR, max power) is entirely unverified — AC2 of issue #47 not implemented
+**Raised:** Issue #47 implementation (HR-zone durations, effort points,
+avg/max HR, max power). Issue #47 has two independently-confirmed-or-not
+parts: AC1 (HR-zone durations z1-z5 and effort points, sourced from
+`effort_zones` on the already-fetched list-endpoint record) is
+live-verified (`docs/trainiq/verification/peloton-2026-09-28.md`) and
+**is implemented** — see `PelotonConnector.normalize()`'s Feature 3.7.
+AC2 (`avg_hr`, `max_hr`, `max_power` from a separate per-workout
+performance endpoint, `GET /api/workout/{id}/performance_graph?...`) is
+**not implemented at all** — this is a different category of gap than
+BL-010/BL-011 below.
+**Why not even a flagged guess, unlike BL-010/BL-011:** for those two
+items, the Architect provided concrete (if unconfirmed) field names/
+endpoint shapes that the Developer implemented behind a flagged-UNCONFIRMED
+constant, with a safe NULL/sentinel fallback if the guess is wrong. For
+AC2, `docs/trainiq/architecture/47-peloton-heart-rate-capture.md` instead
+left `_parse_performance_response()` as a literal
+`raise NotImplementedError(...)` — the Architect explicitly judged a full
+response body's nested shape too speculative to guess (unlike a single
+field name), and called the live-verification step (that doc's Task 1)
+"mandatory, blocking... before implementing
+`fetch_workout_performance()`/`_parse_performance_response()`." Guessing a
+full parse here risks something worse than a NULL: a plausible-looking but
+wrong `avg_hr`/`max_hr`/`max_power` value that looks like real data,
+which is harder to catch later than an honest gap.
+**Why not resolved here:** same as BL-010/BL-011 — requires a live
+diagnostic against the BO's real account using their manually-supplied
+bearer token; this sandboxed Developer routine has no stored Peloton
+credentials and no network path to `api.onepeloton.com`.
+**What is NOT affected by this gap:** AC1's implementation, schema, and
+tests (all shipped, independent of AC2). `avg_hr`/`max_hr`/`max_power`
+remain hardcoded `None` in `normalize()`, exactly as before this issue —
+zero behavior change for AC2 until Task 1 lands.
+**What closes this:** whoever has the BO's manual bearer token runs Task
+1's diagnostic against a workout known to have an HR monitor paired,
+captures the real `performance_graph` response, and implements
+`fetch_workout_performance()`/`_parse_performance_response()` against it
+per the architecture doc's fixed contract — then wires the result into
+`download()`'s loop and `normalize()`, and writes the fixture-based tests
+AC6 requires. Same convention as BL-008's closure for issue #5.
+**Status:** Open — issue #47 left at `stage:dev` with `needs:human` for
+this reason (not advanced to `stage:qa`, unlike #45/#46's BL-010/BL-011
+precedent): those two items shipped working, flagged-uncertain code; this
+one ships no AC2 code at all, so advancing the issue would be presenting
+an unmet acceptance criterion as done.
+
 ### BL-010 — Peloton's real `/api/me` distance-unit field is unconfirmed
 **Raised:** Issue #45 implementation. Issue #45 fixed `PelotonConnector`'s
 distance-unit bug (it always assumed km; the live API actually reports
