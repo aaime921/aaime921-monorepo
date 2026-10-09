@@ -152,14 +152,62 @@ OAUTH_EXPIRY_SAFETY_MARGIN_S = 3600
 # logged, never guessed (R-PELOTON-07).
 _KNOWN_FITNESS_DISCIPLINES = {"cycling", "strength", "yoga", "running", "meditation", "stretching", "cardio"}
 
-# Issue #5: PelotonConnector.normalize() previously assigned raw `distance`
-# straight to `distance_m` with no conversion. Verified against
-# trainiq/csv_import/peloton_csv.py, which imports the same provider's data
-# from a CSV column literally named "Distance (km)" and performs this exact
-# conversion — corroborated by a plausibility check on issue #5's real
-# captured record (1.2163 km over 299s ≈ 14.6 km/h, a normal indoor-cycling
-# pace; nonsensical read as meters). `distance` is kilometers, not meters.
-DISTANCE_KM_TO_M_MULTIPLIER = 1000
+# Issue #45: issue #5's "distance is always km" conclusion (the constant
+# this replaced, DISTANCE_KM_TO_M_MULTIPLIER) came from the CSV importer's
+# own "Distance (km)" column and a plausibility check — not from the live
+# API. Live evidence (BO's real account + Peloton<->Strava pairs, issue #45)
+# proved the live API actually reports `distance` in the account's own
+# display-unit setting (miles for this BO), not always km. The unit must
+# therefore be read from the account, per workout-download, never assumed.
+
+# UNCONFIRMED — issue #45's own suggestion, not yet live-verified against a
+# real /api/me response body beyond its `id` field (the only field
+# docs/verification/peloton-2026-09-28.md actually captured). Task 1 of
+# docs/architecture/45-peloton-distance-unit-conversion.md calls for a
+# live diagnostic (same disposable-script pattern as
+# scripts/debug_peloton_manual_bearer.py from issue #5) against the real
+# account's /api/me response, using the BO's manually-supplied bearer
+# token, to confirm or correct this field name and the alias table below
+# — this is live-account verification (Live-account testing is BO
+# responsibility, not Dev/QA, per docs/roles/technical-architect.md
+# "Testing scope boundaries"), so it could not be run from this sandbox,
+# which has no stored Peloton credentials and no network path to
+# api.onepeloton.com. Everything downstream of
+# _resolve_account_distance_unit() is unaffected by what that
+# verification finds — only this constant and the alias table below would
+# need to change. See docs/trainiq/verification/peloton-2026-09-28.md and
+# BACKLOG.md BL-010.
+ACCOUNT_DISTANCE_UNIT_FIELD = "distance_unit"
+
+# Recognized spellings/synonyms for the two units this project supports
+# today. Extend this table (not the lookup logic in
+# _resolve_account_distance_unit()) if live verification finds Peloton
+# reports a different token set (e.g. "imperial"/"metric" instead of
+# "mi"/"km").
+_DISTANCE_UNIT_ALIASES: dict[str, str] = {
+    "mi": "mi", "mile": "mi", "miles": "mi",
+    "km": "km", "kilometer": "km", "kilometers": "km",
+    "kilometre": "km", "kilometres": "km",
+}
+
+_DISTANCE_UNIT_MULTIPLIERS: dict[str, float] = {
+    "mi": 1609.344,
+    "km": 1000.0,
+}
+
+
+def _resolve_account_distance_unit(me: dict[str, Any]) -> str | None:
+    """Reads ACCOUNT_DISTANCE_UNIT_FIELD off a /api/me response body and
+    maps it through _DISTANCE_UNIT_ALIASES to a canonical "mi"/"km" token.
+    Returns None for a missing field or an unrecognized value — never
+    guesses, never raises. Pure function of its argument; does no logging
+    itself (normalize() owns logging a missing/unknown unit, so it's
+    reported exactly once per affected workout, not once per sync run plus
+    once per workout)."""
+    raw_unit = me.get(ACCOUNT_DISTANCE_UNIT_FIELD)
+    if not isinstance(raw_unit, str):
+        return None
+    return _DISTANCE_UNIT_ALIASES.get(raw_unit.strip().lower())
 
 # Issue #46 — UNCONFIRMED. The one real record on file
 # (docs/trainiq/verification/peloton-2026-09-28.md) does not show either
@@ -556,6 +604,12 @@ class PelotonConnector(Connector):
         # entire history on every run.
         me = self._authenticated_get(f"{self._base_url}/api/me")
         user_id = me["id"]
+        # Issue #45: resolved once per download() call (not per workout) —
+        # this is an account-level setting, not a per-workout field (see
+        # architecture doc's "Why account-level, not per-workout"). Attached
+        # to every workout dict below so normalize() stays a pure function
+        # of its one argument and never itself calls /api/me.
+        distance_unit = _resolve_account_distance_unit(me)
 
         workouts: list[dict[str, Any]] = []
         page = 0
@@ -564,7 +618,12 @@ class PelotonConnector(Connector):
                 f"{self._base_url}/api/user/{user_id}/workouts",
                 params={"page": page},
             )
-            workouts.extend(body.get("data", []))
+            for workout in body.get("data", []):
+                # Always set, even when None — never omitted — so
+                # normalize() can use .get() without needing to distinguish
+                # "key absent" from "key present but None".
+                workout["_distance_unit"] = distance_unit
+                workouts.append(workout)
             if not body.get("show_next"):
                 break
             page += 1
@@ -625,8 +684,24 @@ class PelotonConnector(Connector):
         total_work = raw.get("total_work")
         avg_power = total_work / duration_s if total_work is not None and duration_s else None
 
+        # Issue #45: distance_m depends on the account's own distance unit
+        # (attached to `raw` by download(), see _distance_unit above) — never
+        # a hard-coded unit. A workout with no distance at all (e.g.
+        # meditation) is not a unit problem, so it's not warned about; only
+        # a real distance value with an unresolved unit is.
         raw_distance = raw.get("distance")
-        distance_m = raw_distance * DISTANCE_KM_TO_M_MULTIPLIER if raw_distance is not None else None
+        unit_token = raw.get("_distance_unit")
+        multiplier = _DISTANCE_UNIT_MULTIPLIERS.get(unit_token)
+        if raw_distance is not None and multiplier is None:
+            diagnostic_logger().warning(
+                f"{PROVIDER}: unresolved distance unit {unit_token!r} "
+                f"(external_id={raw.get('id')}) — distance_m stored as NULL, not guessed"
+            )
+            distance_m = None
+        elif raw_distance is not None:
+            distance_m = raw_distance * multiplier
+        else:
+            distance_m = None
 
         return {
             "provider": PROVIDER,

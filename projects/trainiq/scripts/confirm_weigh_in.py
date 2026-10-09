@@ -6,9 +6,11 @@ Issue #38's weigh-in plausibility rule (requirements AC6).
 A flagged reading is never deleted or silently un-flagged — this script
 records that the BO reviewed a specific flagged reading and confirmed it
 was actually valid (a false positive), without touching the row's raw
-values or its original `is_flagged_implausible`/`plausibility_reason`
-verdict. That keeps the override auditable: a confirmed row reads as
-"flagged, but overridden," not as if it had never been flagged at all.
+values or its original `is_weight_flagged_implausible`/
+`weight_plausibility_reason` verdict (Issue #42: this script is scoped to
+the weight axis only — see ADR-039's "Correction (Issue #42)" section).
+That keeps the override auditable: a confirmed row reads as "flagged, but
+overridden," not as if it had never been flagged at all.
 
 Usage:
     python3 scripts/confirm_weigh_in.py --provider eufy --external-id <id> \\
@@ -49,10 +51,10 @@ def confirm_weigh_in(conn: sqlite3.Connection, provider: str, external_id: str) 
     key. Raises NoSuchWeighIn / WeighInNotFlagged rather than writing
     anything — confirming a reading that was never flagged would be
     meaningless, and confirming a nonexistent row is just a typo.
-    Returns the row's `plausibility_reason`, for the caller to print back
-    to the BO as confirmation of what's being overridden."""
+    Returns the row's `weight_plausibility_reason`, for the caller to
+    print back to the BO as confirmation of what's being overridden."""
     row = conn.execute(
-        "SELECT is_flagged_implausible, plausibility_reason FROM weigh_ins "
+        "SELECT is_weight_flagged_implausible, weight_plausibility_reason FROM weigh_ins "
         "WHERE provider = ? AND external_id = ?",
         (provider, external_id),
     ).fetchone()

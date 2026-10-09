@@ -102,6 +102,12 @@ class ConnectorSyncResult:
     # WEIGH_IN records this run's plausibility check flagged; always 0 for
     # ACTIVITY-kind connectors.
     records_flagged_implausible: int = 0
+    # Issue #44: the exact success-path summary string already logged via
+    # summary_logger() below, handed back so callers (trainiq/app.py) can
+    # echo it to the console without rebuilding — and therefore without
+    # risking drift — a second copy of the same text. None on the
+    # error/skipped_reason branches, which build their own separate text.
+    summary_line: Optional[str] = None
 
 
 @dataclass
@@ -199,6 +205,43 @@ def upsert_normalized_activity(conn: sqlite3.Connection, record: dict) -> str:
         ),
     )
     return "updated"
+
+
+def recompute_checkpoint_from_normalized(
+    conn: sqlite3.Connection, provider: str, strategy: str = "default"
+) -> Optional[str]:
+    """Sets sync_checkpoints.last_cursor for (provider, strategy) to
+    MAX(normalized_activities.start_time) for that provider, bypassing
+    extract_resume_cursor()/a live connector entirely — a direct
+    re-derivation from already-corrected data, for use after a
+    renormalization pass changes historical start_time values out from
+    under an already-persisted checkpoint (issue #43). Returns the new
+    cursor value, or None if the provider has no normalized_activities
+    rows at all (a valid, reportable state, not an error). Does not
+    commit — caller owns the transaction boundary, matching every other
+    function in this module and in trainiq.normalization.renormalize.
+
+    Deliberately leaves last_success_at untouched: this is a data
+    repair, not evidence that a sync actually ran against this provider
+    just now."""
+    row = conn.execute(
+        "SELECT MAX(start_time) AS max_start_time FROM normalized_activities WHERE provider = ?",
+        (provider,),
+    ).fetchone()
+    max_start_time = row["max_start_time"] if row else None
+    if max_start_time is None:
+        return None
+
+    conn.execute(
+        """
+        INSERT INTO sync_checkpoints (provider, strategy, last_cursor)
+        VALUES (?, ?, ?)
+        ON CONFLICT(provider, strategy) DO UPDATE SET
+            last_cursor = excluded.last_cursor
+        """,
+        (provider, strategy, max_start_time),
+    )
+    return max_start_time
 
 
 def _derive_next_eligible_retry(
@@ -338,19 +381,22 @@ class SynchronizationEngine:
         """Returns "inserted" or "updated" — same real, non-estimated
         pattern as _upsert_normalized_activity above, for the same reason.
 
-        ADR-039 / Issue #38: column lists extended with
-        is_flagged_implausible/plausibility_reason only. Deliberately
-        NEVER bo_confirmed_valid/bo_confirmed_at — those are BO-owned, so a
-        resync must never silently revert a BO confirmation."""
+        ADR-039 / Issue #38, corrected by Issue #42: column lists extended
+        with is_weight_flagged_implausible/weight_plausibility_reason and
+        is_body_fat_flagged_implausible/body_fat_plausibility_reason only.
+        Deliberately NEVER bo_confirmed_valid/bo_confirmed_at — those are
+        BO-owned, so a resync must never silently revert a BO confirmation."""
         cursor = self._conn.execute(
             "INSERT OR IGNORE INTO weigh_ins "
             "(provider, external_id, timestamp, weight_kg, body_fat_pct, muscle_mass_pct, "
-            " is_flagged_implausible, plausibility_reason) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            " is_weight_flagged_implausible, weight_plausibility_reason, "
+            " is_body_fat_flagged_implausible, body_fat_plausibility_reason) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 record["provider"], record["external_id"], record["timestamp"],
                 record["weight_kg"], record["body_fat_pct"], record["muscle_mass_pct"],
-                record["is_flagged_implausible"], record["plausibility_reason"],
+                record["is_weight_flagged_implausible"], record["weight_plausibility_reason"],
+                record["is_body_fat_flagged_implausible"], record["body_fat_plausibility_reason"],
             ),
         )
         if cursor.rowcount == 1:
@@ -358,11 +404,13 @@ class SynchronizationEngine:
 
         self._conn.execute(
             "UPDATE weigh_ins SET timestamp = ?, weight_kg = ?, body_fat_pct = ?, muscle_mass_pct = ?, "
-            "is_flagged_implausible = ?, plausibility_reason = ? "
+            "is_weight_flagged_implausible = ?, weight_plausibility_reason = ?, "
+            "is_body_fat_flagged_implausible = ?, body_fat_plausibility_reason = ? "
             "WHERE provider = ? AND external_id = ?",
             (
                 record["timestamp"], record["weight_kg"], record["body_fat_pct"], record["muscle_mass_pct"],
-                record["is_flagged_implausible"], record["plausibility_reason"],
+                record["is_weight_flagged_implausible"], record["weight_plausibility_reason"],
+                record["is_body_fat_flagged_implausible"], record["body_fat_plausibility_reason"],
                 record["provider"], record["external_id"],
             ),
         )
@@ -382,7 +430,7 @@ class SynchronizationEngine:
         rows = self._conn.execute(
             "SELECT weight_kg FROM weigh_ins "
             "WHERE weight_kg IS NOT NULL AND timestamp < ? "
-            "AND (is_flagged_implausible = 0 OR bo_confirmed_valid = 1) "
+            "AND (is_weight_flagged_implausible = 0 OR bo_confirmed_valid = 1) "
             "ORDER BY timestamp DESC LIMIT ?",
             (timestamp, limit),
         ).fetchall()
@@ -629,7 +677,7 @@ class SynchronizationEngine:
                         inserted_count += 1
                     else:
                         updated_count += 1
-                    if canonical_record.get("is_flagged_implausible"):
+                    if canonical_record.get("is_weight_flagged_implausible"):
                         flagged_implausible_count += 1
 
                 # Connector-owned per the ADR-013 refinement (Epic 2) — the
@@ -674,12 +722,13 @@ class SynchronizationEngine:
             # the BL-006 clause below) — "flagged 0 implausible" is
             # informative for every connector, including ACTIVITY-kind
             # ones where it will always read 0.
-            summary_logger().info(
+            summary_line = (
                 f"{provider}: downloaded {len(raw_records)}, "
                 f"inserted {inserted_count}, updated {updated_count}, "
                 f"malformed {skipped_malformed}, skipped {skipped_no_external_id}, "
                 f"flagged {flagged_implausible_count} implausible"
             )
+            summary_logger().info(summary_line)
             if not connector.supports_incremental_sync:
                 # BL-006 (Eufy, currently the only connector this applies
                 # to): stated as a generic fact the Sync Engine reads from
@@ -696,6 +745,7 @@ class SynchronizationEngine:
                 records_inserted=inserted_count, records_updated=updated_count,
                 records_malformed=skipped_malformed, records_skipped=skipped_no_external_id,
                 records_flagged_implausible=flagged_implausible_count,
+                summary_line=summary_line,
             )
 
         except AuthenticationError as exc:

@@ -50,3 +50,13 @@ def set_eufy_device_id(config_path: Path, device_id: str) -> None:
     config = load_config(config_path)
     config.setdefault("eufy", {})["device_id"] = device_id
     save_config(config_path, config)
+
+
+def get_athlete_timezone(config_path: Path) -> Optional[str]:
+    return load_config(config_path).get("athlete", {}).get("timezone")
+
+
+def set_athlete_timezone(config_path: Path, timezone_name: str) -> None:
+    config = load_config(config_path)
+    config.setdefault("athlete", {})["timezone"] = timezone_name
+    save_config(config_path, config)

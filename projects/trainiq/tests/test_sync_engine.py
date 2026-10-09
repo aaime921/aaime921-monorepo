@@ -29,6 +29,7 @@ from trainiq.sync.engine import (
     AuthenticationError,
     SynchronizationEngine,
     TransientError,
+    recompute_checkpoint_from_normalized,
 )
 
 
@@ -1112,6 +1113,54 @@ def test_sync_engine_source_contains_no_hardcoded_provider_names_for_this_featur
             )
 
 
+# --- recompute_checkpoint_from_normalized() (AC6, issue #43) -------------------
+
+def test_recompute_checkpoint_from_normalized_sets_cursor_to_max_start_time(db):
+    engine = SynchronizationEngine(db)
+    engine.run_once([MockHealthyConnector("strava_unofficial", _records(3))])
+
+    new_cursor = recompute_checkpoint_from_normalized(db, "strava_unofficial")
+    db.commit()
+
+    assert new_cursor == "2026-01-03T07:00:00+00:00"
+    assert engine.get_checkpoint("strava_unofficial") == "2026-01-03T07:00:00+00:00"
+
+
+def test_recompute_checkpoint_from_normalized_lowers_an_existing_too_high_cursor(db):
+    """AC6's exact scenario: a stale cursor computed under the old (wrong)
+    start_time logic can sit ABOVE the corrected max — recomputation must
+    lower it, not just raise an already-low one."""
+    engine = SynchronizationEngine(db)
+    engine.run_once([MockHealthyConnector("strava_unofficial", _records(3))])
+    db.execute(
+        "UPDATE sync_checkpoints SET last_cursor = ? WHERE provider = ? AND strategy = 'default'",
+        ("2099-01-01T00:00:00+00:00", "strava_unofficial"),
+    )
+    db.commit()
+
+    new_cursor = recompute_checkpoint_from_normalized(db, "strava_unofficial")
+    db.commit()
+
+    assert new_cursor == "2026-01-03T07:00:00+00:00"
+    assert engine.get_checkpoint("strava_unofficial") == "2026-01-03T07:00:00+00:00"
+
+
+def test_recompute_checkpoint_from_normalized_returns_none_for_provider_with_no_rows(db):
+    assert recompute_checkpoint_from_normalized(db, "strava_unofficial") is None
+
+
+def test_recompute_checkpoint_from_normalized_does_not_commit(db):
+    """Caller owns the transaction boundary — same precedent as
+    upsert_normalized_activity() and renormalize_provider()."""
+    engine = SynchronizationEngine(db)
+    engine.run_once([MockHealthyConnector("strava_unofficial", _records(1))])
+
+    recompute_checkpoint_from_normalized(db, "strava_unofficial", strategy="never-committed")
+    db.rollback()
+
+    assert engine.get_checkpoint("strava_unofficial", strategy="never-committed") is None
+
+
 def textwrap_dedent_for_method(source: str) -> str:
     """ast.parse() requires the method body to not be indented relative to
     module level — a plain method's source (as inspect.getsource returns
@@ -1194,15 +1243,15 @@ def test_weigh_in_sync_counts_flagged_implausible_records(db):
     assert r.records_inserted == 6
 
     flagged_row = db.execute(
-        "SELECT is_flagged_implausible, plausibility_reason FROM weigh_ins WHERE external_id = 'outlier1'"
+        "SELECT is_weight_flagged_implausible, weight_plausibility_reason FROM weigh_ins WHERE external_id = 'outlier1'"
     ).fetchone()
-    assert flagged_row["is_flagged_implausible"] == 1
-    assert flagged_row["plausibility_reason"] is not None
+    assert flagged_row["is_weight_flagged_implausible"] == 1
+    assert flagged_row["weight_plausibility_reason"] is not None
 
     normal_row = db.execute(
-        "SELECT is_flagged_implausible FROM weigh_ins WHERE external_id = 'w0'"
+        "SELECT is_weight_flagged_implausible FROM weigh_ins WHERE external_id = 'w0'"
     ).fetchone()
-    assert normal_row["is_flagged_implausible"] == 0
+    assert normal_row["is_weight_flagged_implausible"] == 0
 
 
 def test_weigh_in_sync_summary_reports_flagged_count(db):
@@ -1244,13 +1293,32 @@ def test_activity_sync_summary_always_reports_flagged_zero(db):
     assert "flagged 0 implausible" in log_stream.getvalue()
 
 
+def test_connector_summary_written_to_summary_log_exactly_once(db, tmp_path):
+    """AC3/AC5 (issue #44): summary.log must contain each connector's
+    summary line exactly once per run, not twice. Uses the real file sink
+    (via logging_setup.configure) rather than an in-memory loguru capture,
+    since counting lines in the actual file is what distinguishes "logged
+    once" from "logged twice to the same stream."."""
+    from trainiq import logging_setup
+
+    log_dir = tmp_path / "logs"
+    logging_setup.configure(log_dir)
+
+    engine = SynchronizationEngine(db)
+    connector = MockHealthyConnector("strava", _records(2))
+    engine.run_once([connector])
+
+    summary_log_content = (log_dir / "summary.log").read_text()
+    assert summary_log_content.count("strava: downloaded") == 1
+
+
 def test_resync_never_clears_bo_confirmed_valid_on_already_confirmed_row(db):
     """ADR-039's auditability guarantee: once the BO has confirmed a
     flagged reading as valid (via scripts/confirm_weigh_in.py), a later
     resync re-evaluating the same row must re-derive the same
-    is_flagged_implausible/plausibility_reason verdict but must NEVER
-    touch bo_confirmed_valid/bo_confirmed_at — those columns are
-    BO-owned, and _upsert_weigh_in()'s UPDATE statement deliberately
+    is_weight_flagged_implausible/weight_plausibility_reason verdict but
+    must NEVER touch bo_confirmed_valid/bo_confirmed_at — those columns
+    are BO-owned, and _upsert_weigh_in()'s UPDATE statement deliberately
     excludes them."""
     records = _baseline_weigh_ins(5) + [dict(_OUTLIER_READING)]
     connector_1 = MockWeighInConnector("testscale", records)
@@ -1270,12 +1338,44 @@ def test_resync_never_clears_bo_confirmed_valid_on_already_confirmed_row(db):
     engine.run_once([connector_2])
 
     row = db.execute(
-        "SELECT is_flagged_implausible, bo_confirmed_valid, bo_confirmed_at "
+        "SELECT is_weight_flagged_implausible, bo_confirmed_valid, bo_confirmed_at "
         "FROM weigh_ins WHERE external_id = 'outlier1'"
     ).fetchone()
-    assert row["is_flagged_implausible"] == 1  # the rule's own verdict is re-derived, unchanged
+    assert row["is_weight_flagged_implausible"] == 1  # the rule's own verdict is re-derived, unchanged
     assert row["bo_confirmed_valid"] == 1  # BO's confirmation survived the resync
     assert row["bo_confirmed_at"] == confirmed_at
+
+
+def test_body_fat_only_flagged_reading_still_feeds_later_rolling_baseline(db):
+    """Issue #42's core regression, exercised at the sync-engine level:
+    a reading whose body-fat axis trips (and, pre-fix, would have
+    suppressed the whole record) must still contribute its weight to a
+    later record's recent_weights_kg lookup — this is the concrete
+    mechanism by which the old bug silently excluded 123 good readings
+    from ever contributing to anyone else's baseline either."""
+    body_fat_only_flagged = {
+        "external_id": "bf_only", "timestamp": "2026-01-06T08:00:00+00:00",
+        "weight_kg": 84.5, "body_fat_pct": 1.5,
+    }
+    later_reading = {
+        "external_id": "later", "timestamp": "2026-01-07T08:00:00+00:00",
+        "weight_kg": 84.0, "body_fat_pct": 18.0,
+    }
+    records = _baseline_weigh_ins(5) + [body_fat_only_flagged, later_reading]
+    connector = MockWeighInConnector("testscale", records)
+    engine = SynchronizationEngine(db)
+
+    engine.run_once([connector])
+
+    flagged_row = db.execute(
+        "SELECT is_weight_flagged_implausible, is_body_fat_flagged_implausible "
+        "FROM weigh_ins WHERE external_id = 'bf_only'"
+    ).fetchone()
+    assert flagged_row["is_weight_flagged_implausible"] == 0
+    assert flagged_row["is_body_fat_flagged_implausible"] == 1
+
+    recent = engine._recent_weights_before("2026-01-08T00:00:00+00:00", 5)
+    assert 84.5 in recent  # the body-fat-only-flagged row's weight still feeds the window
 
 
 def test_recent_weights_before_excludes_flagged_unconfirmed_readings(db):

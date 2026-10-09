@@ -457,6 +457,76 @@ def test_main_prints_console_summary_of_connector_status_and_sync_results(isolat
 
 # --- --configure flag --------------------------------------------------------
 
+def test_main_console_summary_includes_flagged_count(isolated_app_dirs, monkeypatch, capsys):
+    """AC2/AC4 (issue #44): the console summary line must include
+    `flagged N implausible`, matching summary.log exactly, instead of the
+    flagged-less line main() used to rebuild on its own. Reuses the
+    WEIGH_IN + outlier-reading fixtures from test_sync_engine.py so
+    build_canonical_record() actually flags a record, the same way
+    test_weigh_in_sync_summary_reports_flagged_count does for summary.log."""
+    import trainiq.app as app_module
+    from trainiq.connectors.base import RecordKind
+    from tests.test_sync_engine import _OUTLIER_READING, _baseline_weigh_ins
+
+    class _FakeWeighInConnector:
+        supports_incremental_sync = True
+        record_kind = RecordKind.WEIGH_IN
+
+        def __init__(self, credential_store):
+            self.provider = "testscale"
+
+        def authenticate(self):
+            return True
+
+        def download(self, since=None):
+            return _baseline_weigh_ins(5) + [dict(_OUTLIER_READING)]
+
+        def normalize(self, raw):
+            return {
+                "external_id": raw["external_id"],
+                "timestamp": raw["timestamp"],
+                "weight_kg": raw.get("weight_kg"),
+                "body_fat_pct": raw.get("body_fat_pct"),
+            }
+
+        def extract_resume_cursor(self, normalized):
+            value = normalized.get("timestamp")
+            return str(value) if value is not None else None
+
+        def get_state(self):
+            from trainiq.connectors.base import ConnectorState
+            return ConnectorState.HEALTHY
+
+        def restore_state(self, state):
+            pass
+
+        def transition_state(self, to_state, detail=None):
+            pass
+
+        def active_strategy(self):
+            return None
+
+    monkeypatch.setattr(app_module, "StravaConnector", _FakeWeighInConnector)
+
+    app_support, log_dir, cfg_path = isolated_app_dirs
+    app_support.mkdir(parents=True, exist_ok=True)
+    db_path = app_support / "trainiq.db"
+
+    from trainiq.storage.schema import open_db as _open_db
+    conn = _open_db(db_path)
+    store = CredentialStore(conn=conn)
+    store.set(STRAVA_PROVIDER, "refresh_token", "token")
+    conn.close()
+
+    exit_code = app_module.main(argv=[])
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "flagged 1 implausible" in captured.out
+    summary_log_content = (log_dir / "summary.log").read_text()
+    assert "flagged 1 implausible" in summary_log_content
+
+
 def test_main_configure_flag_with_zero_connectors_runs_configure_not_first_time_wizard(isolated_app_dirs, monkeypatch):
     """--configure must drive run_configure(), never run_first_time_setup(),
     even when zero connectors are configured — proven by making

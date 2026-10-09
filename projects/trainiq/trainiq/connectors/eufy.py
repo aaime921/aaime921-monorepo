@@ -56,8 +56,14 @@ Feature 2.2 (Normalization mapping — extraction only, same scope limit as
   raw values like `829.5`/`883.5` only become plausible human body weights
   (`82.95`/`88.35`) once divided by 10. `normalize()` now applies this
   conversion. The accompanying `body_fat`/`muscle_mass` values were
-  audited against the same captured payloads and are already correctly
-  scaled (normal percentage/BMI ranges) — no change made to those two.
+  audited against the same captured payloads and are correctly scaled
+  (normal percentage/BMI ranges) when present and non-zero.
+
+  ISSUE #42 CORRECTION, BO-confirmed against live production data: a
+  literal `0` on `body_fat`/`muscle_mass` is Eufy's "not measured"
+  sentinel (e.g. weighed with socks on, no impedance reading), not a
+  genuine 0% reading. `normalize()` now maps a literal `0` on either
+  field to `None` before it reaches persistence or the plausibility rule.
 
 Feature 2.3 (Acquisition strategy plumbing — forward-looking, not BLE
   itself, per the Tier A roadmap's explicit scope limit): reports Cloud as
@@ -302,6 +308,8 @@ class EufyConnector(Connector):
         docstring."""
         scale_data = raw.get("scale_data") or {}
         raw_weight = scale_data.get("weight")
+        raw_body_fat = scale_data.get("body_fat")
+        raw_muscle_mass = scale_data.get("muscle_mass")
         return {
             "provider": PROVIDER,
             "external_id": str(raw["id"]),
@@ -309,8 +317,15 @@ class EufyConnector(Connector):
             "weight_kg": (
                 raw_weight / WEIGHT_DECI_KG_TO_KG_DIVISOR if raw_weight is not None else None
             ),
-            "body_fat_pct": scale_data.get("body_fat"),  # confirmed correctly scaled, see module docstring
-            "muscle_mass_pct": scale_data.get("muscle_mass"),  # confirmed correctly scaled, see module docstring
+            # Issue #42, BO-confirmed live evidence: Eufy reports 0.0 for a
+            # metric the scale did not actually measure this weigh-in (e.g.
+            # weighed with socks on, no impedance reading) — not a genuine
+            # 0% reading. Normalized to None here, at the same extraction
+            # layer Issue #1 already established for the deci-kg weight
+            # conversion, so neither persistence nor the plausibility rule
+            # ever sees the sentinel as a real value.
+            "body_fat_pct": None if raw_body_fat == 0 else raw_body_fat,
+            "muscle_mass_pct": None if raw_muscle_mass == 0 else raw_muscle_mass,
         }
 
     def extract_resume_cursor(self, normalized: dict[str, Any]) -> str | None:

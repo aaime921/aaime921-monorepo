@@ -37,6 +37,34 @@ scoped as its own slice/ADR, not assumed to already be covered here.
 
 ## OPEN
 
+### BL-010 — Peloton's real `/api/me` distance-unit field is unconfirmed
+**Raised:** Issue #45 implementation. Issue #45 fixed `PelotonConnector`'s
+distance-unit bug (it always assumed km; the live API actually reports
+the account's own display unit, miles for this BO) by resolving the unit
+from `GET /api/me` per account, rather than hard-coding either unit. The
+field it reads, `ACCOUNT_DISTANCE_UNIT_FIELD = "distance_unit"`, is the
+issue's own suggested value — the Architect flagged it explicitly as
+**unconfirmed**, since confirming it requires a live diagnostic against
+the BO's own account (same category as BL-008's endpoint-shape question).
+**Why still open:** that live diagnostic (architecture doc's Task 1:
+capture the **full** `/api/me` response body with the BO's manually-
+supplied bearer token — the only prior pass, 2026-09-28, recorded just
+`id` from that endpoint) requires live-account access this sandbox
+doesn't have. Per `docs/trainiq/roles/technical-architect.md`'s "Testing
+scope boundaries," live-account testing is BO responsibility, not Dev/QA
+— so the Developer routine implemented the rest of the fix (connector
+logic, one-off correction script, tests) against the flagged placeholder
+and left this item open rather than guessing a confirmation that didn't
+happen. See `docs/trainiq/verification/peloton-2026-09-28.md`'s
+2026-10-09 addendum.
+**What closes this:** whoever has the BO's manual bearer token runs the
+Task 1 diagnostic, confirms or corrects `ACCOUNT_DISTANCE_UNIT_FIELD` and
+`_DISTANCE_UNIT_ALIASES` in `trainiq/connectors/peloton.py`, and records
+the finding as a further dated addendum — same convention BL-008 used.
+Everything downstream of `_resolve_account_distance_unit()` is unaffected
+either way (by design — see the architecture doc's "Risks/tradeoffs").
+**Status:** Open.
+
 ### BL-011 — Peloton class/ride detail response shape (and `workout_type`/`peloton_id`'s own existence) is unverified against a live account
 **Raised:** Issue #46 implementation (class title/instructor/class
 type/planned length).
@@ -97,6 +125,10 @@ value with nowhere to go.
 `bo_confirmed_at` to `weigh_ins` — a different, already-approved migration
 for a different purpose (plausibility flagging, not confidence scoring).
 `source_confidence` remains unaddressed; don't assume v4 covers it.
+Issue #42 (schema v5) renamed two of those v4 columns and added two more
+(splitting weight-plausibility from body-fat-plausibility) — same
+category of unrelated, already-approved migration; `source_confidence`
+remains unaddressed by v5 too.
 
 
 
