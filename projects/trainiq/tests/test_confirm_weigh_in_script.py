@@ -37,7 +37,8 @@ def db(tmp_path: Path):
 
 def _insert_weigh_in(conn, external_id, flagged, reason=None, provider="eufy"):
     conn.execute(
-        "INSERT INTO weigh_ins (provider, external_id, timestamp, weight_kg, is_flagged_implausible, plausibility_reason) "
+        "INSERT INTO weigh_ins (provider, external_id, timestamp, weight_kg, "
+        "is_weight_flagged_implausible, weight_plausibility_reason) "
         "VALUES (?, ?, '2026-01-01T00:00:00+00:00', 20.0, ?, ?)",
         (provider, external_id, 1 if flagged else 0, reason),
     )
@@ -51,11 +52,11 @@ def test_confirming_a_flagged_reading_sets_confirmed_fields(db):
 
     assert reason == "deviates from baseline"
     row = db.execute(
-        "SELECT bo_confirmed_valid, bo_confirmed_at, is_flagged_implausible FROM weigh_ins WHERE external_id = 'w1'"
+        "SELECT bo_confirmed_valid, bo_confirmed_at, is_weight_flagged_implausible FROM weigh_ins WHERE external_id = 'w1'"
     ).fetchone()
     assert row["bo_confirmed_valid"] == 1
     assert row["bo_confirmed_at"] is not None
-    assert row["is_flagged_implausible"] == 1  # original verdict untouched — auditable, not reverted
+    assert row["is_weight_flagged_implausible"] == 1  # original verdict untouched — auditable, not reverted
 
 
 def test_confirming_a_nonexistent_row_raises_and_writes_nothing(db):
