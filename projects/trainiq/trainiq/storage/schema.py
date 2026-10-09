@@ -25,7 +25,7 @@ from pathlib import Path
 
 from trainiq.storage.backfill import backfill_weigh_in_plausibility, decouple_weigh_in_plausibility
 
-CURRENT_SCHEMA_VERSION = 7
+CURRENT_SCHEMA_VERSION = 8
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -195,6 +195,26 @@ _MIGRATIONS: dict[int, str] = {
         ALTER TABLE normalized_activities ADD COLUMN hr_zone_4_s INTEGER;
         ALTER TABLE normalized_activities ADD COLUMN hr_zone_5_s INTEGER;
         ALTER TABLE normalized_activities ADD COLUMN effort_points REAL;
+    """,
+    # Issue #47, AC2: avg_hr/max_hr/max_power (already-existing columns,
+    # schema v1 — no new column for them here) now come from the
+    # per-workout performance endpoint instead of being hardcoded None
+    # (BL-012, resolved per the BO's live capture, 2026-10-09). The one new
+    # column this migration adds is performance_fetch_status: a dedicated
+    # "attempted this pass or not" marker, since avg_hr/max_hr/max_power are
+    # real nullable facts and "all three NULL" is already the legitimate
+    # value for "no HR monitor paired" — a sentinel cannot live inside them
+    # the way class_type's own TEXT value doubles as #46's status (see
+    # peloton.py's Feature 3.8 docstring).
+    #
+    # Named performance_fetch_status, not hr_fetch_status, per issue #57's
+    # architecture doc (docs/trainiq/architecture/57-peloton-distance-performance-graph-source.md,
+    # "Approach"): #57's distance fix and this issue's HR/power both read
+    # the SAME fetch_workout_performance() call, so one shared status
+    # column is correct — a per-concern column would always move in
+    # lockstep with this one.
+    8: """
+        ALTER TABLE normalized_activities ADD COLUMN performance_fetch_status TEXT;
     """,
 }
 

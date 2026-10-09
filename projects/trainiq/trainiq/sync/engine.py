@@ -154,6 +154,20 @@ def upsert_normalized_activity(conn: sqlite3.Connection, record: dict) -> str:
     column, with no "didn't attempt this pass" case either (see
     peloton.py's Feature 3.7 docstring).
 
+    Issue #47, AC2 (BL-012, resolved): avg_hr, max_hr, and max_power — until
+    now always fully re-derivable per sync (every provider either supplies
+    a real value or a deliberate None from normalize(), unconditionally) —
+    gain a genuine "didn't attempt this pass" case for Peloton once the
+    performance-endpoint fetch is itself skip-gated (peloton.py's Feature
+    3.8). They move into the COALESCE group here, alongside the new
+    performance_fetch_status column (same "attempted or not" marker
+    pattern as #46's class_type, shared with issue #57's distance fix —
+    see peloton.py's module docstring for why one shared column, not two).
+    For every non-Peloton provider this is behaviorally identical to
+    today's unconditional overwrite: normalize() never skip-gates these
+    three for Strava/Eufy, so COALESCE(real_value_or_None, old_value)
+    overwrites identically whenever a real sync actually runs.
+
     The COALESCE treatment for #46's 6 columns is load-bearing, not
     cosmetic: re-running
     renormalize_provider() for Peloton calls connector.normalize() against
@@ -173,8 +187,9 @@ def upsert_normalized_activity(conn: sqlite3.Connection, record: dict) -> str:
              training_load, training_load_method, source_confidence,
              activity_title, instructor_name, class_type, planned_duration_s,
              provider_class_id, sport_type_raw,
-             hr_zone_1_s, hr_zone_2_s, hr_zone_3_s, hr_zone_4_s, hr_zone_5_s, effort_points)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             hr_zone_1_s, hr_zone_2_s, hr_zone_3_s, hr_zone_4_s, hr_zone_5_s, effort_points,
+             performance_fetch_status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             record["provider"], record["external_id"], record["start_time"], record["duration_s"],
@@ -185,6 +200,7 @@ def upsert_normalized_activity(conn: sqlite3.Connection, record: dict) -> str:
             record.get("planned_duration_s"), record.get("provider_class_id"), record.get("sport_type_raw"),
             record.get("hr_zone_1_s"), record.get("hr_zone_2_s"), record.get("hr_zone_3_s"),
             record.get("hr_zone_4_s"), record.get("hr_zone_5_s"), record.get("effort_points"),
+            record.get("performance_fetch_status"),
         ),
     )
     if cursor.rowcount == 1:
@@ -194,7 +210,8 @@ def upsert_normalized_activity(conn: sqlite3.Connection, record: dict) -> str:
         """
         UPDATE normalized_activities SET
             start_time = ?, duration_s = ?, discipline = ?, distance_m = ?,
-            avg_hr = ?, max_hr = ?, avg_power = ?, max_power = ?, calories = ?,
+            avg_hr = COALESCE(?, avg_hr), max_hr = COALESCE(?, max_hr),
+            avg_power = ?, max_power = COALESCE(?, max_power), calories = ?,
             training_load = ?, training_load_method = ?, source_confidence = ?,
             activity_title = COALESCE(?, activity_title),
             instructor_name = COALESCE(?, instructor_name),
@@ -203,7 +220,8 @@ def upsert_normalized_activity(conn: sqlite3.Connection, record: dict) -> str:
             provider_class_id = COALESCE(?, provider_class_id),
             sport_type_raw = COALESCE(?, sport_type_raw),
             hr_zone_1_s = ?, hr_zone_2_s = ?, hr_zone_3_s = ?, hr_zone_4_s = ?, hr_zone_5_s = ?,
-            effort_points = ?
+            effort_points = ?,
+            performance_fetch_status = COALESCE(?, performance_fetch_status)
         WHERE provider = ? AND external_id = ?
         """,
         (
@@ -215,6 +233,7 @@ def upsert_normalized_activity(conn: sqlite3.Connection, record: dict) -> str:
             record.get("planned_duration_s"), record.get("provider_class_id"), record.get("sport_type_raw"),
             record.get("hr_zone_1_s"), record.get("hr_zone_2_s"), record.get("hr_zone_3_s"),
             record.get("hr_zone_4_s"), record.get("hr_zone_5_s"), record.get("effort_points"),
+            record.get("performance_fetch_status"),
             record["provider"], record["external_id"],
         ),
     )
@@ -289,7 +308,7 @@ def retry_with_backoff(
     sleep_fn: Callable[[float], None] = time.sleep,
 ) -> _T:
     """Extracted from SynchronizationEngine._with_retries (issue #46) so
-    scripts/backfill_peloton_class_metadata.py can reuse the exact same
+    scripts/backfill_peloton_workout_details.py can reuse the exact same
     ADR-037 retry policy instead of duplicating it. Behavior for the
     existing caller (SynchronizationEngine._with_retries, below) is
     unchanged. Exponential backoff for TransientError by default; honors a
@@ -560,7 +579,7 @@ class SynchronizationEngine:
         Delegates to the module-level retry_with_backoff() (issue #46),
         the same method -> module-function promotion issue #36 already
         made for upsert_normalized_activity — so
-        scripts/backfill_peloton_class_metadata.py can reuse this exact
+        scripts/backfill_peloton_workout_details.py can reuse this exact
         ADR-037 policy. Behavior for this (and every existing) caller is
         unchanged."""
         return retry_with_backoff(fn, provider, self._max_retries, self._backoff_base_s, self._sleep)

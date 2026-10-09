@@ -89,6 +89,11 @@ def _build_activity_record(
         "hr_zone_4_s": normalized.get("hr_zone_4_s"),
         "hr_zone_5_s": normalized.get("hr_zone_5_s"),
         "effort_points": normalized.get("effort_points"),
+        # Issue #47, AC2 / issue #57: same pass-through-verbatim treatment
+        # as the fields above — absence (None) is meaningful ("not
+        # attempted this pass" or a genuinely failed fetch) and must reach
+        # upsert_normalized_activity()'s COALESCE logic unchanged.
+        "performance_fetch_status": normalized.get("performance_fetch_status"),
     }
 
 

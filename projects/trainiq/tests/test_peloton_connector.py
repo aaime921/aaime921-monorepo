@@ -27,6 +27,8 @@ from trainiq.connectors.peloton import (
     CRED_SESSION_EXPIRES_AT,
     CRED_SESSION_ID,
     OAUTH_TOKEN_URL,
+    PERFORMANCE_FETCH_STATUS_FAILED,
+    PERFORMANCE_FETCH_STATUS_OK,
     PROVIDER,
     RIDE_ID_FIELD,
     WORKOUT_TYPE_FIELD,
@@ -34,7 +36,9 @@ from trainiq.connectors.peloton import (
     PelotonHTTPError,
     PelotonOAuthRejected,
     apply_class_metadata_update,
+    apply_hr_performance_update,
     generate_pkce_pair,
+    _parse_performance_response,
 )
 from trainiq.credentials.store import CredentialStore
 from trainiq.storage.schema import open_db
@@ -117,6 +121,20 @@ class FakePelotonSession:
 
 def _login_success_response(session_id="session-abc"):
     return FakeResponse(200, {"session_id": session_id, "user_id": "u1"})
+
+
+# Issue #47, AC2: every download() call now also fetches
+# performance_graph for each workout new since the checkpoint — these
+# tests predate that and only care about pagination/class-metadata, so
+# they script the simplest "no HR/power data at all" response for it.
+def _empty_performance_response():
+    return FakeResponse(200, {"metrics": []})
+
+
+# What download() attaches to a workout dict for the above response —
+# _avg_hr/_max_hr/_max_power keys are always set (to None here), never
+# omitted, once a fetch is attempted and does not fail.
+_NO_PERFORMANCE_DATA = {"_performance_fetch_status": "ok", "_avg_hr": None, "_max_hr": None, "_max_power": None}
 
 
 # --- Feature 3.1: Authentication (automated path) ---------------------------
@@ -449,6 +467,7 @@ def test_download_fetches_user_id_then_paginated_workouts(credential_store):
     fake.script_post_response(_login_success_response())
     fake.script_get_response(FakeResponse(200, {"id": "u1"}))
     fake.script_get_response(FakeResponse(200, {"data": [{"id": "w1"}], "show_next": False}))
+    fake.script_get_response(_empty_performance_response())
     connector = PelotonConnector(credential_store, session=fake)
     connector.authenticate()
 
@@ -456,7 +475,7 @@ def test_download_fetches_user_id_then_paginated_workouts(credential_store):
 
     # Issue #46: every workout gets a _class_type attached — "not_a_class"
     # here since this fixture has neither workout_type nor peloton_id.
-    assert workouts == [{"id": "w1", "_distance_unit": None, "_class_type": "not_a_class"}]
+    assert workouts == [{"id": "w1", "_distance_unit": None, "_class_type": "not_a_class", **_NO_PERFORMANCE_DATA}]
     assert fake.get_calls[0]["url"] == "https://api.onepeloton.com/api/me"
     assert fake.get_calls[1]["url"] == "https://api.onepeloton.com/api/user/u1/workouts"
     assert fake.get_calls[1]["params"] == {"page": 0}
@@ -470,14 +489,16 @@ def test_download_walks_all_pages_until_show_next_is_falsy(credential_store):
     fake.script_get_response(FakeResponse(200, {"id": "u1"}))
     fake.script_get_response(FakeResponse(200, {"data": [{"id": "w1"}], "show_next": True}))
     fake.script_get_response(FakeResponse(200, {"data": [{"id": "w2"}], "show_next": False}))
+    fake.script_get_response(_empty_performance_response())
+    fake.script_get_response(_empty_performance_response())
     connector = PelotonConnector(credential_store, session=fake)
     connector.authenticate()
 
     workouts = connector.download()
 
     assert workouts == [
-        {"id": "w1", "_distance_unit": None, "_class_type": "not_a_class"},
-        {"id": "w2", "_distance_unit": None, "_class_type": "not_a_class"},
+        {"id": "w1", "_distance_unit": None, "_class_type": "not_a_class", **_NO_PERFORMANCE_DATA},
+        {"id": "w2", "_distance_unit": None, "_class_type": "not_a_class", **_NO_PERFORMANCE_DATA},
     ]
     assert fake.get_calls[1]["params"] == {"page": 0}
     assert fake.get_calls[2]["params"] == {"page": 1}
@@ -496,15 +517,18 @@ def test_download_walks_three_pages_not_just_a_hardcoded_two(credential_store):
     fake.script_get_response(FakeResponse(200, {"data": [{"id": "w1"}], "show_next": True}))
     fake.script_get_response(FakeResponse(200, {"data": [{"id": "w2"}], "show_next": True}))
     fake.script_get_response(FakeResponse(200, {"data": [{"id": "w3"}], "show_next": False}))
+    fake.script_get_response(_empty_performance_response())
+    fake.script_get_response(_empty_performance_response())
+    fake.script_get_response(_empty_performance_response())
     connector = PelotonConnector(credential_store, session=fake)
     connector.authenticate()
 
     workouts = connector.download()
 
     assert workouts == [
-        {"id": "w1", "_distance_unit": None, "_class_type": "not_a_class"},
-        {"id": "w2", "_distance_unit": None, "_class_type": "not_a_class"},
-        {"id": "w3", "_distance_unit": None, "_class_type": "not_a_class"},
+        {"id": "w1", "_distance_unit": None, "_class_type": "not_a_class", **_NO_PERFORMANCE_DATA},
+        {"id": "w2", "_distance_unit": None, "_class_type": "not_a_class", **_NO_PERFORMANCE_DATA},
+        {"id": "w3", "_distance_unit": None, "_class_type": "not_a_class", **_NO_PERFORMANCE_DATA},
     ]
     assert fake.get_calls[1]["params"] == {"page": 0}
     assert fake.get_calls[2]["params"] == {"page": 1}
@@ -522,14 +546,16 @@ def test_download_resolves_recognized_account_unit_and_attaches_to_every_workout
     fake.script_get_response(FakeResponse(200, {"id": "u1", "distance_unit": "mi"}))
     fake.script_get_response(FakeResponse(200, {"data": [{"id": "w1"}], "show_next": True}))
     fake.script_get_response(FakeResponse(200, {"data": [{"id": "w2"}], "show_next": False}))
+    fake.script_get_response(_empty_performance_response())
+    fake.script_get_response(_empty_performance_response())
     connector = PelotonConnector(credential_store, session=fake)
     connector.authenticate()
 
     workouts = connector.download()
 
     assert workouts == [
-        {"id": "w1", "_distance_unit": "mi", "_class_type": "not_a_class"},
-        {"id": "w2", "_distance_unit": "mi", "_class_type": "not_a_class"},
+        {"id": "w1", "_distance_unit": "mi", "_class_type": "not_a_class", **_NO_PERFORMANCE_DATA},
+        {"id": "w2", "_distance_unit": "mi", "_class_type": "not_a_class", **_NO_PERFORMANCE_DATA},
     ]
 
 
@@ -543,12 +569,13 @@ def test_download_missing_account_unit_field_attaches_none_not_omitted(credentia
     fake.script_post_response(_login_success_response())
     fake.script_get_response(FakeResponse(200, {"id": "u1"}))
     fake.script_get_response(FakeResponse(200, {"data": [{"id": "w1"}], "show_next": False}))
+    fake.script_get_response(_empty_performance_response())
     connector = PelotonConnector(credential_store, session=fake)
     connector.authenticate()
 
     workouts = connector.download()
 
-    assert workouts == [{"id": "w1", "_distance_unit": None, "_class_type": "not_a_class"}]
+    assert workouts == [{"id": "w1", "_distance_unit": None, "_class_type": "not_a_class", **_NO_PERFORMANCE_DATA}]
 
 
 # --- Issue #47, AC1: effort_zones. Unlike every other connector-internal
@@ -574,6 +601,7 @@ def test_download_passes_effort_zones_through_unmodified(credential_store):
         },
     }
     fake.script_get_response(FakeResponse(200, {"data": [{"id": "w1", "effort_zones": effort_zones}], "show_next": False}))
+    fake.script_get_response(_empty_performance_response())
     connector = PelotonConnector(credential_store, session=fake)
     connector.authenticate()
 
@@ -1043,11 +1071,16 @@ def test_download_two_workouts_sharing_ride_id_fetches_class_details_once(creden
     ]
     fake = _me_and_workouts_responses(workouts)
     fake.script_get_response(FakeResponse(200, {"title": "Power Zone Max", "duration": 2700}))
+    fake.script_get_response(_empty_performance_response())
+    fake.script_get_response(_empty_performance_response())
     connector = _authenticated_connector(credential_store, fake)
 
     result = connector.download(since="1000")
 
-    assert len(fake.get_calls) == 3  # /me, /workouts, exactly one ride-detail call
+    # /me, /workouts, exactly one ride-detail call (shared via the cache),
+    # plus one performance fetch per workout (#47 AC2 — not shared, see
+    # peloton.py's download() docstring on why there's no cache for it).
+    assert len(fake.get_calls) == 5
     assert result[0]["_class_title"] == "Power Zone Max"
     assert result[1]["_class_title"] == "Power Zone Max"
     assert result[0]["_provider_class_id"] == "ride-1"
@@ -1069,11 +1102,12 @@ def test_download_class_workout_with_since_none_is_always_attempted(credential_s
     workouts = [{"id": "w1", WORKOUT_TYPE_FIELD: "class", RIDE_ID_FIELD: "ride-1", "start_time": 500}]
     fake = _me_and_workouts_responses(workouts)
     fake.script_get_response(FakeResponse(200, {"title": "Endurance", "duration": 1800}))
+    fake.script_get_response(_empty_performance_response())
     connector = _authenticated_connector(credential_store, fake)
 
     result = connector.download(since=None)
 
-    assert len(fake.get_calls) == 3
+    assert len(fake.get_calls) == 4
     assert result[0]["_class_title"] == "Endurance"
 
 
@@ -1087,6 +1121,7 @@ def test_download_class_lookup_404_sets_lookup_failed_and_logs(credential_store)
     workouts = [{"id": "w1", WORKOUT_TYPE_FIELD: "class", RIDE_ID_FIELD: "ride-1", "start_time": 2000}]
     fake = _me_and_workouts_responses(workouts)
     fake.script_get_response(FakeResponse(404, {}))
+    fake.script_get_response(_empty_performance_response())
     connector = _authenticated_connector(credential_store, fake)
 
     log_stream = io.StringIO()
@@ -1112,14 +1147,327 @@ def test_download_class_lookup_rate_limited_propagates_transient_error(credentia
 
 
 def test_download_non_class_workout_gets_not_a_class_sentinel_no_network_call(credential_store):
+    """"No network call" here means specifically no ride-detail call — a
+    performance fetch (#47 AC2) still happens, independent of class
+    status, since any discipline can have HR data."""
     workouts = [{"id": "w1", "start_time": 2000}]  # no workout_type, no peloton_id at all
     fake = _me_and_workouts_responses(workouts)
+    fake.script_get_response(_empty_performance_response())
     connector = _authenticated_connector(credential_store, fake)
 
     result = connector.download(since="1000")
 
     assert result[0]["_class_type"] == CLASS_TYPE_NOT_A_CLASS
-    assert len(fake.get_calls) == 2  # no ride-detail call
+    assert len(fake.get_calls) == 3  # /me, /workouts, one performance fetch — no ride-detail call
+
+
+# --- Issue #47, AC2: _parse_performance_response() -----------------------
+# CONFIRMED shape (docs/trainiq/verification/peloton-2026-09-28.md's
+# 2026-10-09 addendum, BL-012 resolved) — the BO's real captured response
+# for a 45-min Power Zone ride with an HR monitor paired.
+
+_REAL_PERFORMANCE_RESPONSE = {
+    "duration": 2700,
+    "metrics": [
+        {"display_name": "Output", "display_unit": "watts", "max_value": 294, "average_value": 131, "slug": "output"},
+        {"display_name": "Cadence", "display_unit": "rpm", "max_value": 128, "average_value": 91, "slug": "cadence"},
+        {"display_name": "Resistance", "display_unit": "%", "max_value": 57, "average_value": 34, "slug": "resistance"},
+        {"display_name": "Speed", "display_unit": "kph", "max_value": 39.8, "average_value": 28.3, "slug": "speed"},
+        {
+            "display_name": "Heart Rate", "display_unit": "bpm", "max_value": 163, "average_value": 135,
+            "slug": "heart_rate", "missing_data_duration": 79,
+        },
+    ],
+    "summaries": [
+        {"display_name": "Total Output", "display_unit": "kj", "value": 354, "slug": "total_output"},
+        {"display_name": "Distance", "display_unit": "km", "value": 21.21367, "slug": "distance"},
+    ],
+}
+
+
+def test_parse_performance_response_extracts_hr_and_power_by_slug_not_position(credential_store):
+    result = _parse_performance_response(_REAL_PERFORMANCE_RESPONSE)
+
+    assert result["avg_hr"] == 135
+    assert result["max_hr"] == 163
+    assert result["max_power"] == 294
+
+
+def test_parse_performance_response_no_heart_rate_entry_yields_none_not_zero(credential_store):
+    """A workout with no HR monitor paired has no "heart_rate" entry in
+    metrics[] at all — never fabricated as 0."""
+    body = {**_REAL_PERFORMANCE_RESPONSE, "metrics": [
+        m for m in _REAL_PERFORMANCE_RESPONSE["metrics"] if m["slug"] != "heart_rate"
+    ]}
+
+    result = _parse_performance_response(body)
+
+    assert result["avg_hr"] is None
+    assert result["max_hr"] is None
+    assert result["max_power"] == 294  # unaffected — output is a separate entry
+
+
+def test_parse_performance_response_no_metrics_key_at_all_yields_all_none(credential_store):
+    result = _parse_performance_response({"duration": 2700})
+
+    assert result == {"avg_hr": None, "max_hr": None, "max_power": None}
+
+
+def test_parse_performance_response_malformed_metrics_entries_are_skipped_not_raised(credential_store):
+    body = {"metrics": ["not-a-dict", 42, None, {"slug": "heart_rate", "display_unit": "bpm", "average_value": 100, "max_value": 150}]}
+
+    result = _parse_performance_response(body)
+
+    assert result["avg_hr"] == 100
+    assert result["max_hr"] == 150
+
+
+def test_parse_performance_response_unexpected_display_unit_yields_none_and_warns(credential_store):
+    """Never guess past a display_unit the connector doesn't recognize —
+    e.g. a locale that reports heart rate differently."""
+    import io
+
+    from loguru import logger
+
+    body = {"metrics": [{"slug": "heart_rate", "display_unit": "unexpected", "average_value": 100, "max_value": 150}]}
+
+    log_stream = io.StringIO()
+    handler_id = logger.add(log_stream, format="{message}")
+    try:
+        result = _parse_performance_response(body)
+    finally:
+        logger.remove(handler_id)
+
+    assert result["avg_hr"] is None
+    assert result["max_hr"] is None
+    assert "heart_rate" in log_stream.getvalue().lower()
+
+
+def test_parse_performance_response_float_average_value_rounds_to_int(credential_store):
+    """average_value/max_value can come back as a float even though the
+    stored columns are INTEGER — rounds rather than truncates."""
+    body = {"metrics": [{"slug": "heart_rate", "display_unit": "bpm", "average_value": 134.6, "max_value": 163.2}]}
+
+    result = _parse_performance_response(body)
+
+    assert result["avg_hr"] == 135
+    assert result["max_hr"] == 163
+
+
+# --- Issue #47, AC2: fetch_workout_performance() --------------------------
+
+def test_fetch_workout_performance_success_returns_parsed_dict(credential_store):
+    fake = FakePelotonSession()
+    fake.script_post_response(_login_success_response())
+    connector = _authenticated_connector(credential_store, fake)
+    fake.script_get_response(FakeResponse(200, _REAL_PERFORMANCE_RESPONSE))
+
+    result = connector.fetch_workout_performance("workout-1")
+
+    assert result["avg_hr"] == 135
+    assert result["max_hr"] == 163
+    assert result["max_power"] == 294
+    assert fake.get_calls[-1]["url"] == "https://api.onepeloton.com/api/workout/workout-1/performance_graph"
+    assert fake.get_calls[-1]["params"] == {"every_n": 60}
+
+
+def test_fetch_workout_performance_404_returns_none_logged_not_raised(credential_store):
+    import io
+
+    from loguru import logger
+
+    fake = FakePelotonSession()
+    fake.script_post_response(_login_success_response())
+    connector = _authenticated_connector(credential_store, fake)
+    fake.script_get_response(FakeResponse(404, {}))
+
+    log_stream = io.StringIO()
+    handler_id = logger.add(log_stream, format="{message}")
+    try:
+        result = connector.fetch_workout_performance("workout-1")
+    finally:
+        logger.remove(handler_id)
+
+    assert result is None
+    assert "performance fetch failed" in log_stream.getvalue()
+
+
+def test_fetch_workout_performance_retries_exhausted_returns_none_not_raised(credential_store):
+    """AC5: never aborts the run over one workout's missing HR data, even
+    after the retry policy gives up — a deliberately WIDER safety net than
+    fetch_class_details()'s (see the method's own docstring)."""
+    fake = FakePelotonSession()
+    fake.script_post_response(_login_success_response())
+    connector = _authenticated_connector(credential_store, fake)
+    for _ in range(4):  # max_retries=3 default inside retry_with_backoff -> 4 total attempts
+        fake.script_get_response(FakeResponse(429, {}, headers={"Retry-After": "0.001"}))
+
+    result = connector.fetch_workout_performance("workout-1")
+
+    assert result is None
+
+
+def test_fetch_workout_performance_401_raises_authentication_error(credential_store):
+    fake = FakePelotonSession()
+    fake.script_post_response(_login_success_response())
+    connector = _authenticated_connector(credential_store, fake)
+    fake.script_get_response(FakeResponse(401, {}))
+
+    with pytest.raises(AuthenticationError):
+        connector.fetch_workout_performance("workout-1")
+
+
+def test_fetch_workout_performance_before_authenticate_raises_authentication_error(credential_store):
+    fake = FakePelotonSession()
+    connector = PelotonConnector(credential_store, session=fake)
+
+    with pytest.raises(AuthenticationError):
+        connector.fetch_workout_performance("workout-1")
+
+
+# --- Issue #47, AC2: normalize() reads the (possibly absent) performance
+# keys, never guesses -------------------------------------------------
+
+def test_normalize_reads_avg_hr_max_hr_max_power_from_performance_keys(credential_store):
+    fake = FakePelotonSession()
+    connector = PelotonConnector(credential_store, session=fake)
+    raw = {
+        **_REAL_RECORD_NO_EFFORT_ZONES,
+        "_performance_fetch_status": PERFORMANCE_FETCH_STATUS_OK,
+        "_avg_hr": 135, "_max_hr": 163, "_max_power": 294,
+    }
+
+    result = connector.normalize(raw)
+
+    assert result["avg_hr"] == 135
+    assert result["max_hr"] == 163
+    assert result["max_power"] == 294
+    assert result["performance_fetch_status"] == PERFORMANCE_FETCH_STATUS_OK
+
+
+def test_normalize_performance_fetch_failed_yields_none_for_all_three(credential_store):
+    fake = FakePelotonSession()
+    connector = PelotonConnector(credential_store, session=fake)
+    raw = {**_REAL_RECORD_NO_EFFORT_ZONES, "_performance_fetch_status": PERFORMANCE_FETCH_STATUS_FAILED}
+
+    result = connector.normalize(raw)
+
+    assert result["avg_hr"] is None
+    assert result["max_hr"] is None
+    assert result["max_power"] is None
+    assert result["performance_fetch_status"] == PERFORMANCE_FETCH_STATUS_FAILED
+
+
+def test_normalize_no_performance_keys_at_all_is_not_attempted_this_pass(credential_store):
+    """The "not attempted this pass" case the COALESCE upsert depends on —
+    a workout older than the sync checkpoint, or one synced before AC2
+    shipped at all."""
+    fake = FakePelotonSession()
+    connector = PelotonConnector(credential_store, session=fake)
+
+    result = connector.normalize(_REAL_RECORD_NO_EFFORT_ZONES)
+
+    assert result["avg_hr"] is None
+    assert result["max_hr"] is None
+    assert result["max_power"] is None
+    assert result["performance_fetch_status"] is None
+
+
+# --- Issue #47, AC2: download() wires fetch_workout_performance() into
+# the per-workout loop, independent of class status ------------------
+
+def test_download_attaches_real_hr_and_power_data_for_a_new_workout(credential_store):
+    workouts = [{"id": "w1", "start_time": 2000}]  # not a class workout
+    fake = _me_and_workouts_responses(workouts)
+    fake.script_get_response(FakeResponse(200, _REAL_PERFORMANCE_RESPONSE))
+    connector = _authenticated_connector(credential_store, fake)
+
+    result = connector.download(since="1000")
+
+    assert result[0]["_performance_fetch_status"] == PERFORMANCE_FETCH_STATUS_OK
+    assert result[0]["_avg_hr"] == 135
+    assert result[0]["_max_hr"] == 163
+    assert result[0]["_max_power"] == 294
+
+
+def test_download_performance_fetch_failure_sets_failed_status_does_not_raise(credential_store):
+    """AC5: a performance-endpoint fetch failure for one workout is logged
+    and degraded to NULL, never aborting the whole download()."""
+    workouts = [{"id": "w1", "start_time": 2000}]
+    fake = _me_and_workouts_responses(workouts)
+    for _ in range(4):
+        fake.script_get_response(FakeResponse(429, {}, headers={"Retry-After": "0.001"}))
+    connector = _authenticated_connector(credential_store, fake)
+
+    result = connector.download(since="1000")
+
+    assert result[0]["_performance_fetch_status"] == PERFORMANCE_FETCH_STATUS_FAILED
+    assert "_avg_hr" not in result[0]
+    assert "_max_hr" not in result[0]
+    assert "_max_power" not in result[0]
+
+
+def test_download_performance_fetch_independent_of_class_status(credential_store):
+    """A class workout (#46) and a non-class workout both get a
+    performance fetch — the two mechanisms are gated on the same
+    checkpoint but are otherwise independent."""
+    workouts = [{"id": "w1", WORKOUT_TYPE_FIELD: "class", RIDE_ID_FIELD: "ride-1", "start_time": 2000}]
+    fake = _me_and_workouts_responses(workouts)
+    fake.script_get_response(FakeResponse(200, {"title": "Endurance", "duration": 1800}))
+    fake.script_get_response(FakeResponse(200, _REAL_PERFORMANCE_RESPONSE))
+    connector = _authenticated_connector(credential_store, fake)
+
+    result = connector.download(since="1000")
+
+    assert result[0]["_class_title"] == "Endurance"  # #46, unaffected
+    assert result[0]["_avg_hr"] == 135  # #47 AC2, same workout, same pass
+
+
+# --- Issue #47, AC2: apply_hr_performance_update() ------------------------
+
+def test_apply_hr_performance_update_sets_only_the_four_columns(db):
+    db.execute(
+        """
+        INSERT INTO normalized_activities
+            (provider, external_id, start_time, duration_s, discipline, source_confidence, avg_power)
+        VALUES ('peloton', 'ext-1', '2026-01-01T00:00:00+00:00', 300, 'cycling', 0.9, 200)
+        """
+    )
+    db.commit()
+
+    apply_hr_performance_update(
+        db, "ext-1",
+        {"avg_hr": 135, "max_hr": 163, "max_power": 294, "performance_fetch_status": PERFORMANCE_FETCH_STATUS_OK},
+    )
+    db.commit()
+
+    row = dict(db.execute(
+        "SELECT * FROM normalized_activities WHERE provider = 'peloton' AND external_id = 'ext-1'"
+    ).fetchone())
+    assert row["avg_hr"] == 135
+    assert row["max_hr"] == 163
+    assert row["max_power"] == 294
+    assert row["performance_fetch_status"] == PERFORMANCE_FETCH_STATUS_OK
+    assert row["avg_power"] == 200  # untouched
+
+
+def test_apply_hr_performance_update_scoped_to_peloton_provider_only(db):
+    db.execute(
+        """
+        INSERT INTO normalized_activities
+            (provider, external_id, start_time, duration_s, discipline, source_confidence)
+        VALUES ('strava', 'ext-1', '2026-01-01T00:00:00+00:00', 300, 'cycling', 0.9)
+        """
+    )
+    db.commit()
+
+    apply_hr_performance_update(db, "ext-1", {"avg_hr": 135, "max_hr": 163, "max_power": 294, "performance_fetch_status": "ok"})
+    db.commit()
+
+    row = dict(db.execute(
+        "SELECT * FROM normalized_activities WHERE provider = 'strava' AND external_id = 'ext-1'"
+    ).fetchone())
+    assert row["avg_hr"] is None
 
 
 # --- Issue #46: apply_class_metadata_update() --------------------------
@@ -1204,6 +1552,8 @@ def test_end_to_end_automated_login_sync(db, credential_store):
         {"id": 1, "start_time": 1790014244, "end_time": 1790016044, "fitness_discipline": "cycling"},
         {"id": 2, "start_time": 1790100644, "end_time": 1790102444, "fitness_discipline": "strength"},
     ], "show_next": False}))
+    fake.script_get_response(_empty_performance_response())
+    fake.script_get_response(_empty_performance_response())
     connector = PelotonConnector(credential_store, session=fake)
     engine = SynchronizationEngine(db)
 
@@ -1241,6 +1591,7 @@ def test_end_to_end_sync_with_preexisting_str_checkpoint_does_not_raise(db, cred
     fake.script_get_response(FakeResponse(200, {"data": [
         {"id": 1, "start_time": 1791134056, "end_time": 1791135856, "fitness_discipline": "cycling"},
     ], "show_next": False}))
+    fake.script_get_response(_empty_performance_response())
     connector = PelotonConnector(credential_store, session=fake)
     engine = SynchronizationEngine(db)
     engine._set_checkpoint(PROVIDER, "1790883770", strategy="default")
@@ -1264,6 +1615,7 @@ def test_end_to_end_two_consecutive_syncs_cursor_advances_without_error(db, cred
     fake.script_get_response(FakeResponse(200, {"data": [
         {"id": 1, "start_time": 1790883770, "end_time": 1790885570, "fitness_discipline": "cycling"},
     ], "show_next": False}))
+    fake.script_get_response(_empty_performance_response())
     connector = PelotonConnector(credential_store, session=fake)
     engine = SynchronizationEngine(db)
 
@@ -1276,6 +1628,7 @@ def test_end_to_end_two_consecutive_syncs_cursor_advances_without_error(db, cred
     fake.script_get_response(FakeResponse(200, {"data": [
         {"id": 2, "start_time": 1791134056, "end_time": 1791135856, "fitness_discipline": "cycling"},
     ], "show_next": False}))
+    fake.script_get_response(_empty_performance_response())
 
     second_result = engine.run_once([connector])
 

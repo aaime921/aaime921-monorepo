@@ -45,9 +45,9 @@ parts: AC1 (HR-zone durations z1-z5 and effort points, sourced from
 live-verified (`docs/trainiq/verification/peloton-2026-09-28.md`) and
 **is implemented** — see `PelotonConnector.normalize()`'s Feature 3.7.
 AC2 (`avg_hr`, `max_hr`, `max_power` from a separate per-workout
-performance endpoint, `GET /api/workout/{id}/performance_graph?...`) is
-**not implemented at all** — this is a different category of gap than
-BL-010/BL-011 below.
+performance endpoint, `GET /api/workout/{id}/performance_graph?...`) was
+**not implemented at all** at the time this item was raised — a different
+category of gap than BL-010/BL-011 below.
 **Why not even a flagged guess, unlike BL-010/BL-011:** for those two
 items, the Architect provided concrete (if unconfirmed) field names/
 endpoint shapes that the Developer implemented behind a flagged-UNCONFIRMED
@@ -62,26 +62,37 @@ field name), and called the live-verification step (that doc's Task 1)
 full parse here risks something worse than a NULL: a plausible-looking but
 wrong `avg_hr`/`max_hr`/`max_power` value that looks like real data,
 which is harder to catch later than an honest gap.
-**Why not resolved here:** same as BL-010/BL-011 — requires a live
-diagnostic against the BO's real account using their manually-supplied
-bearer token; this sandboxed Developer routine has no stored Peloton
-credentials and no network path to `api.onepeloton.com`.
-**What is NOT affected by this gap:** AC1's implementation, schema, and
-tests (all shipped, independent of AC2). `avg_hr`/`max_hr`/`max_power`
-remain hardcoded `None` in `normalize()`, exactly as before this issue —
-zero behavior change for AC2 until Task 1 lands.
-**What closes this:** whoever has the BO's manual bearer token runs Task
-1's diagnostic against a workout known to have an HR monitor paired,
-captures the real `performance_graph` response, and implements
-`fetch_workout_performance()`/`_parse_performance_response()` against it
-per the architecture doc's fixed contract — then wires the result into
-`download()`'s loop and `normalize()`, and writes the fixture-based tests
-AC6 requires. Same convention as BL-008's closure for issue #5.
-**Status:** Open — issue #47 left at `stage:dev` with `needs:human` for
-this reason (not advanced to `stage:qa`, unlike #45/#46's BL-010/BL-011
-precedent): those two items shipped working, flagged-uncertain code; this
-one ships no AC2 code at all, so advancing the issue would be presenting
-an unmet acceptance criterion as done.
+**What closed this:** the BO ran Task 1's diagnostic directly (read-only,
+2026-10-09) against a real 45-minute Power Zone ride with an HR monitor
+paired, captured the full `performance_graph` response, and posted the
+real field mapping on issue #47 — see `docs/trainiq/verification/peloton-2026-09-28.md`'s
+2026-10-09 addendum for the complete captured shape. `avg_hr`/`max_hr` map
+from `metrics[slug="heart_rate"].average_value`/`.max_value`; `max_power`
+from `metrics[slug="output"].max_value`; looked up by `slug`, never
+position. `fetch_workout_performance()`/`_parse_performance_response()`
+are now implemented against this confirmed shape (no more
+`NotImplementedError`), wired into `download()`'s per-workout loop
+(gated on the sync checkpoint, independent of class status) and
+`normalize()`, with fixture-based tests from the exact captured record
+(`tests/test_peloton_connector.py`) and an extended
+`scripts/backfill_peloton_workout_details.py` (renamed from
+`backfill_peloton_class_metadata.py`, per the BO's "share one mechanism"
+directive — see that script's own module docstring).
+**One deviation from the architecture doc's naming, not from its
+contract:** the new "attempted this pass or not" column is named
+`performance_fetch_status`, not `hr_fetch_status` as that doc proposed —
+per issue #57's architecture doc (written after #47's, while #47 still had
+no PR/branch), which points out that #57's own distance fix reads the
+exact same `fetch_workout_performance()` call and should not get a second,
+always-in-lockstep status column. See `peloton.py`'s Feature 3.8 module
+docstring.
+**Not implemented, left for a future issue if ever wanted:** avg
+cadence — confirmed present in the same response at effectively zero
+extra cost, but the requirements doc framed it as optional ("free or out
+of scope"), and the BO's own unblocking comment did not ask for it as
+part of AC2's mapping.
+**Status:** Closed as resolved (2026-10-09) — AC2 implemented and tested;
+issue #47 advanced past `stage:dev`.
 
 ### BL-010 — Peloton's real `/api/me` distance-unit field is unconfirmed
 **Raised:** Issue #45 implementation. Issue #45 fixed `PelotonConnector`'s
