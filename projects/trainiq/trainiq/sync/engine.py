@@ -48,7 +48,7 @@ import sqlite3
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Callable, Optional
+from typing import Callable, Optional, TypeVar
 
 from trainiq.athlete.profile import AthleteProfile
 from trainiq.connectors.base import Connector, ConnectorState, RecordKind
@@ -138,20 +138,43 @@ def upsert_normalized_activity(conn: sqlite3.Connection, record: dict) -> str:
     re-normalization pass (trainiq.normalization.renormalize) can reuse
     this exact idempotent persistence primitive instead of duplicating the
     INSERT OR IGNORE / conditional UPDATE pattern a second time. Does not
-    commit — the caller owns the transaction boundary, same as before."""
+    commit — the caller owns the transaction boundary, same as before.
+
+    Issue #46: the 6 new class-metadata columns (activity_title through
+    sport_type_raw) use `.get(...)` with no KeyError on a missing key —
+    every OTHER column above is still indexed directly, since the schema
+    genuinely requires them. In the UPDATE branch ONLY, these 6 use
+    `COALESCE(?, existing_column)` instead of unconditional overwrite —
+    every pre-existing column keeps today's unconditional-overwrite
+    behavior exactly as-is (correct for them: they're always fully
+    re-derivable from the raw payload alone, with no "didn't attempt"
+    case). This is load-bearing, not cosmetic: re-running
+    renormalize_provider() for Peloton calls connector.normalize() against
+    an already-stored raw payload with zero new network I/O, so a
+    class-detail lookup is never retried there — without COALESCE, that
+    re-run would silently overwrite every already-backfilled class title/
+    instructor/type back to NULL. Safe for Strava (always supplies a real
+    value or a deliberate None — COALESCE(NULL, existing_NULL) is still
+    NULL) and for Peloton non-class workouts (recomputes the same sentinel
+    every run — COALESCE(same_value, old_value) overwrites identically to
+    before)."""
     cursor = conn.execute(
         """
         INSERT OR IGNORE INTO normalized_activities
             (provider, external_id, start_time, duration_s, discipline, distance_m,
              avg_hr, max_hr, avg_power, max_power, calories,
-             training_load, training_load_method, source_confidence)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             training_load, training_load_method, source_confidence,
+             activity_title, instructor_name, class_type, planned_duration_s,
+             provider_class_id, sport_type_raw)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             record["provider"], record["external_id"], record["start_time"], record["duration_s"],
             record["discipline"], record["distance_m"], record["avg_hr"], record["max_hr"],
             record["avg_power"], record["max_power"], record["calories"],
             record["training_load"], record["training_load_method"], record["source_confidence"],
+            record.get("activity_title"), record.get("instructor_name"), record.get("class_type"),
+            record.get("planned_duration_s"), record.get("provider_class_id"), record.get("sport_type_raw"),
         ),
     )
     if cursor.rowcount == 1:
@@ -162,14 +185,23 @@ def upsert_normalized_activity(conn: sqlite3.Connection, record: dict) -> str:
         UPDATE normalized_activities SET
             start_time = ?, duration_s = ?, discipline = ?, distance_m = ?,
             avg_hr = ?, max_hr = ?, avg_power = ?, max_power = ?, calories = ?,
-            training_load = ?, training_load_method = ?, source_confidence = ?
+            training_load = ?, training_load_method = ?, source_confidence = ?,
+            activity_title = COALESCE(?, activity_title),
+            instructor_name = COALESCE(?, instructor_name),
+            class_type = COALESCE(?, class_type),
+            planned_duration_s = COALESCE(?, planned_duration_s),
+            provider_class_id = COALESCE(?, provider_class_id),
+            sport_type_raw = COALESCE(?, sport_type_raw)
         WHERE provider = ? AND external_id = ?
         """,
         (
             record["start_time"], record["duration_s"], record["discipline"], record["distance_m"],
             record["avg_hr"], record["max_hr"], record["avg_power"], record["max_power"],
             record["calories"], record["training_load"], record["training_load_method"],
-            record["source_confidence"], record["provider"], record["external_id"],
+            record["source_confidence"],
+            record.get("activity_title"), record.get("instructor_name"), record.get("class_type"),
+            record.get("planned_duration_s"), record.get("provider_class_id"), record.get("sport_type_raw"),
+            record["provider"], record["external_id"],
         ),
     )
     return "updated"
@@ -230,6 +262,49 @@ def _derive_next_eligible_retry(
     # Healthy/Warning/RecoveryRequired are all "eligible every run" today —
     # no meaningful future retry time to compute.
     return None
+
+
+_T = TypeVar("_T")
+
+
+def retry_with_backoff(
+    fn: Callable[[], _T],
+    provider: str,
+    max_retries: int = 3,
+    backoff_base_s: float = 1.0,
+    sleep_fn: Callable[[float], None] = time.sleep,
+) -> _T:
+    """Extracted from SynchronizationEngine._with_retries (issue #46) so
+    scripts/backfill_peloton_class_metadata.py can reuse the exact same
+    ADR-037 retry policy instead of duplicating it. Behavior for the
+    existing caller (SynchronizationEngine._with_retries, below) is
+    unchanged. Exponential backoff for TransientError by default; honors a
+    provider-directed `retry_after_s` hint when present (ADR-037) instead
+    of the generic formula. AuthenticationError propagates immediately —
+    no retry loop, per Milestone 4 §3."""
+    attempt = 0
+    while True:
+        try:
+            return fn()
+        except AuthenticationError:
+            raise
+        except TransientError as exc:
+            attempt += 1
+            if attempt > max_retries:
+                raise
+            if exc.retry_after_s is not None:
+                delay = exc.retry_after_s
+                diagnostic_logger().warning(
+                    f"{provider}: transient error (attempt {attempt}/{max_retries}), "
+                    f"provider-directed retry in {delay:.1f}s (ADR-037): {exc}"
+                )
+            else:
+                delay = backoff_base_s * (2 ** (attempt - 1))
+                diagnostic_logger().warning(
+                    f"{provider}: transient error (attempt {attempt}/{max_retries}), "
+                    f"retrying in {delay:.1f}s: {exc}"
+                )
+            sleep_fn(delay)
 
 
 class SynchronizationEngine:
@@ -466,30 +541,15 @@ class SynchronizationEngine:
         """Exponential backoff for TransientError by default; honors a
         provider-directed `retry_after_s` hint when present (ADR-037)
         instead of the generic formula. AuthenticationError propagates
-        immediately — no retry loop, per Milestone 4 §3."""
-        attempt = 0
-        while True:
-            try:
-                return fn()
-            except AuthenticationError:
-                raise
-            except TransientError as exc:
-                attempt += 1
-                if attempt > self._max_retries:
-                    raise
-                if exc.retry_after_s is not None:
-                    delay = exc.retry_after_s
-                    diagnostic_logger().warning(
-                        f"{provider}: transient error (attempt {attempt}/{self._max_retries}), "
-                        f"provider-directed retry in {delay:.1f}s (ADR-037): {exc}"
-                    )
-                else:
-                    delay = self._backoff_base_s * (2 ** (attempt - 1))
-                    diagnostic_logger().warning(
-                        f"{provider}: transient error (attempt {attempt}/{self._max_retries}), "
-                        f"retrying in {delay:.1f}s: {exc}"
-                    )
-                self._sleep(delay)
+        immediately — no retry loop, per Milestone 4 §3.
+
+        Delegates to the module-level retry_with_backoff() (issue #46),
+        the same method -> module-function promotion issue #36 already
+        made for upsert_normalized_activity — so
+        scripts/backfill_peloton_class_metadata.py can reuse this exact
+        ADR-037 policy. Behavior for this (and every existing) caller is
+        unchanged."""
+        return retry_with_backoff(fn, provider, self._max_retries, self._backoff_base_s, self._sleep)
 
     # --- orchestration -----------------------------------------------------
 

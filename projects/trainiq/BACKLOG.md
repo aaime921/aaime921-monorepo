@@ -65,6 +65,43 @@ Everything downstream of `_resolve_account_distance_unit()` is unaffected
 either way (by design — see the architecture doc's "Risks/tradeoffs").
 **Status:** Open.
 
+### BL-011 — Peloton class/ride detail response shape (and `workout_type`/`peloton_id`'s own existence) is unverified against a live account
+**Raised:** Issue #46 implementation (class title/instructor/class
+type/planned length).
+**Detail:** same category as BL-008 (the workout-list endpoint, closed by
+issue #5) and BL-010 (issue #45, account distance unit) — this
+implementation rests on constants that are the issue's own claim, not
+independently confirmed against this project's own live evidence. The one
+real record on file (`docs/trainiq/verification/peloton-2026-09-28.md`)
+does not show a `workout_type` or `peloton_id` field at all, and no
+capture exists anywhere in this repo for the ride/class detail endpoint
+(`GET /api/ride/{id}/details`) or the `joins=ride,ride.instructor`
+parameter's response shape. Flagged constants, all in
+`trainiq/connectors/peloton.py`: `WORKOUT_TYPE_FIELD`, `RIDE_ID_FIELD`,
+`RIDE_DETAIL_ENDPOINT_TEMPLATE`, `RIDE_DETAIL_JOINS_PARAM`,
+`CLASS_TITLE_FIELD`, `INSTRUCTOR_OBJECT_FIELD`, `INSTRUCTOR_NAME_FIELD`,
+`CLASS_TYPE_RAW_FIELD`, `PLANNED_DURATION_FIELD`.
+**Why not resolved here:** confirming these requires a live diagnostic
+against the BO's real account using their manually-supplied bearer token
+(`docs/trainiq/architecture/46-peloton-strava-class-metadata.md`'s Task
+1) — this sandboxed Developer routine has no stored Peloton credentials
+and no network path to `api.onepeloton.com`, so it cannot run that
+verification itself. This implementation currently uses the per-ride-id
+details-endpoint plan (plan (b) in the architecture doc) with the
+flagged-UNCONFIRMED field names above; Task 1 may find the cheaper
+joins-on-list approach (plan (a)) works instead, or that the field names
+differ.
+**What is NOT affected by this gap:** the schema (6 nullable columns on
+`normalized_activities`), the skip-if-already-synced-since-checkpoint
+optimization, the COALESCE-based upsert safety (so a future
+`renormalize_provider()` re-run can never silently wipe backfilled class
+metadata back to NULL), the backfill tool's resumability, and every
+test's shape — only the flagged constants' literal values, and (if
+`WORKOUT_TYPE_FIELD` turns out not to exist) `_is_class_workout()`'s
+already-coded fallback branch, would need to change.
+**Status:** Open — needs the BO (or whoever holds the manual bearer
+token) to run Task 1's live diagnostic and update the flagged constants
+accordingly, then close this item the way BL-008 was closed for issue #5.
 
 ### BL-009 — `weigh_ins` table has no `source_confidence` column
 **Raised:** Epic 6 implementation (Normalization Engine, slice 5), discovered

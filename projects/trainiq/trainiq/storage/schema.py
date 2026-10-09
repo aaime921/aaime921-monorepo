@@ -25,7 +25,7 @@ from pathlib import Path
 
 from trainiq.storage.backfill import backfill_weigh_in_plausibility, decouple_weigh_in_plausibility
 
-CURRENT_SCHEMA_VERSION = 5
+CURRENT_SCHEMA_VERSION = 6
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -161,6 +161,22 @@ _MIGRATIONS: dict[int, str] = {
         ALTER TABLE weigh_ins RENAME COLUMN plausibility_reason TO weight_plausibility_reason;
         ALTER TABLE weigh_ins ADD COLUMN is_body_fat_flagged_implausible INTEGER NOT NULL DEFAULT 0;
         ALTER TABLE weigh_ins ADD COLUMN body_fat_plausibility_reason TEXT;
+    """,
+    # Issue #46: class title/instructor/class type/planned length (Peloton)
+    # and raw name/sport_type (Strava, Strava-unofficial). All 6 nullable —
+    # providers that don't populate a given column simply leave it NULL,
+    # same pattern athlete_profile's and weigh_ins' nullable columns already
+    # use. See docs/trainiq/architecture/46-peloton-strava-class-metadata.md
+    # ("Why one table, not activity_details") for why these live directly on
+    # normalized_activities rather than a separate table.
+    # Renumbered 5 -> 6 when merged after Issue #42 (which took v5).
+    6: """
+        ALTER TABLE normalized_activities ADD COLUMN activity_title TEXT;
+        ALTER TABLE normalized_activities ADD COLUMN instructor_name TEXT;
+        ALTER TABLE normalized_activities ADD COLUMN class_type TEXT;
+        ALTER TABLE normalized_activities ADD COLUMN planned_duration_s INTEGER;
+        ALTER TABLE normalized_activities ADD COLUMN provider_class_id TEXT;
+        ALTER TABLE normalized_activities ADD COLUMN sport_type_raw TEXT;
     """,
 }
 

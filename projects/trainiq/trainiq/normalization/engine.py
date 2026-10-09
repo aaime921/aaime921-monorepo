@@ -67,6 +67,18 @@ def _build_activity_record(
         "training_load": load_result.load,
         "training_load_method": load_result.method.value,
         "source_confidence": confidence,
+        # Issue #46: passed through verbatim — this function does no
+        # interpretation of these, same as every other already-normalized
+        # field above. Absence (None) is meaningful (see peloton.py's
+        # normalize() docstring on the three cases it represents) and must
+        # reach upsert_normalized_activity()'s COALESCE logic unchanged,
+        # not be coerced to anything else here.
+        "activity_title": normalized.get("activity_title"),
+        "instructor_name": normalized.get("instructor_name"),
+        "class_type": normalized.get("class_type"),
+        "planned_duration_s": normalized.get("planned_duration_s"),
+        "provider_class_id": normalized.get("provider_class_id"),
+        "sport_type_raw": normalized.get("sport_type_raw"),
     }
 
 

@@ -118,7 +118,7 @@ class FakeStravalibClient:
 def _fake_activity(
     id_=123, start_date="2026-01-05T07:00:00+00:00", elapsed_time=3600,
     sport_type="Ride", type_="Ride", avg_hr=145.0, max_hr=168, avg_watts=210.0,
-    max_watts=310, distance=30000.0,
+    max_watts=310, distance=30000.0, name="Afternoon Ride",
 ):
     return SimpleNamespace(
         id=id_,
@@ -131,6 +131,7 @@ def _fake_activity(
         average_watts=avg_watts,
         max_watts=max_watts,
         distance=distance,
+        name=name,
     )
 
 
@@ -326,6 +327,20 @@ def test_normalize_maps_core_fields(credential_store):
     assert result["avg_power"] == 210
     assert result["max_power"] == 310
     assert result["distance_m"] == 30000.0
+    # Issue #46 (AC3): raw name/sport_type persisted independent of any
+    # Peloton link.
+    assert result["activity_title"] == "Afternoon Ride"
+    assert result["sport_type_raw"] == "Ride"
+
+
+def test_normalize_activity_title_is_none_when_strava_reports_no_name(credential_store):
+    fake = FakeStravalibClient()
+    connector = StravaConnector(credential_store, stravalib_client=fake)
+    raw = connector._activity_to_raw_dict(_fake_activity(name=None))
+
+    result = connector.normalize(raw)
+
+    assert result["activity_title"] is None
 
 
 def test_normalize_never_fabricates_calories(credential_store):
