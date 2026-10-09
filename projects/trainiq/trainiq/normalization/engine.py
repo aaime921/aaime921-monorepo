@@ -85,6 +85,7 @@ def _build_activity_record(
         "planned_duration_s": normalized.get("planned_duration_s"),
         "provider_class_id": normalized.get("provider_class_id"),
         "sport_type_raw": normalized.get("sport_type_raw"),
+        "difficulty_estimate": normalized.get("difficulty_estimate"),
     }
 
 

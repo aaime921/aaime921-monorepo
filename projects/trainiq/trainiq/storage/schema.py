@@ -25,7 +25,7 @@ from pathlib import Path
 
 from trainiq.storage.backfill import backfill_weigh_in_plausibility, decouple_weigh_in_plausibility
 
-CURRENT_SCHEMA_VERSION = 7
+CURRENT_SCHEMA_VERSION = 8
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -188,6 +188,14 @@ _MIGRATIONS: dict[int, str] = {
         ALTER TABLE normalized_activities ADD COLUMN elevation_gain_m REAL;
         ALTER TABLE normalized_activities ADD COLUMN moving_time_s INTEGER;
         ALTER TABLE normalized_activities ADD COLUMN is_indoor INTEGER;
+    """,
+    # Issue #58 (resolves BL-011): the ride-details response fetched for
+    # every successful Peloton class lookup already carries
+    # difficulty_estimate at zero marginal network cost — a 7th nullable
+    # enrichment column, same all-nullable pattern as the 6 added in v6.
+    # Renumbered 7 -> 8 when merged after Issue #48 (which took v7).
+    8: """
+        ALTER TABLE normalized_activities ADD COLUMN difficulty_estimate REAL;
     """,
 }
 

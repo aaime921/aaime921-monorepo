@@ -140,10 +140,11 @@ def upsert_normalized_activity(conn: sqlite3.Connection, record: dict) -> str:
     INSERT OR IGNORE / conditional UPDATE pattern a second time. Does not
     commit — the caller owns the transaction boundary, same as before.
 
-    Issue #46: the 6 new class-metadata columns (activity_title through
-    sport_type_raw) use `.get(...)` with no KeyError on a missing key —
-    every OTHER column above is still indexed directly, since the schema
-    genuinely requires them. In the UPDATE branch ONLY, these 6 use
+    Issue #46 (plus difficulty_estimate, issue #58): the 7 class-metadata
+    columns (activity_title through sport_type_raw, plus
+    difficulty_estimate) use `.get(...)` with no KeyError on a missing key
+    — every OTHER column above is still indexed directly, since the schema
+    genuinely requires them. In the UPDATE branch ONLY, these 7 use
     `COALESCE(?, existing_column)` instead of unconditional overwrite —
     every pre-existing column keeps today's unconditional-overwrite
     behavior exactly as-is (correct for them: they're always fully
@@ -166,8 +167,8 @@ def upsert_normalized_activity(conn: sqlite3.Connection, record: dict) -> str:
              elevation_gain_m, moving_time_s, is_indoor,
              training_load, training_load_method, source_confidence,
              activity_title, instructor_name, class_type, planned_duration_s,
-             provider_class_id, sport_type_raw)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             provider_class_id, sport_type_raw, difficulty_estimate)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             record["provider"], record["external_id"], record["start_time"], record["duration_s"],
@@ -177,6 +178,7 @@ def upsert_normalized_activity(conn: sqlite3.Connection, record: dict) -> str:
             record["training_load"], record["training_load_method"], record["source_confidence"],
             record.get("activity_title"), record.get("instructor_name"), record.get("class_type"),
             record.get("planned_duration_s"), record.get("provider_class_id"), record.get("sport_type_raw"),
+            record.get("difficulty_estimate"),
         ),
     )
     if cursor.rowcount == 1:
@@ -194,7 +196,8 @@ def upsert_normalized_activity(conn: sqlite3.Connection, record: dict) -> str:
             class_type = COALESCE(?, class_type),
             planned_duration_s = COALESCE(?, planned_duration_s),
             provider_class_id = COALESCE(?, provider_class_id),
-            sport_type_raw = COALESCE(?, sport_type_raw)
+            sport_type_raw = COALESCE(?, sport_type_raw),
+            difficulty_estimate = COALESCE(?, difficulty_estimate)
         WHERE provider = ? AND external_id = ?
         """,
         (
@@ -205,6 +208,7 @@ def upsert_normalized_activity(conn: sqlite3.Connection, record: dict) -> str:
             record["source_confidence"],
             record.get("activity_title"), record.get("instructor_name"), record.get("class_type"),
             record.get("planned_duration_s"), record.get("provider_class_id"), record.get("sport_type_raw"),
+            record.get("difficulty_estimate"),
             record["provider"], record["external_id"],
         ),
     )
