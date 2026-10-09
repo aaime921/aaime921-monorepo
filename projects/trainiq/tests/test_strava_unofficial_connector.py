@@ -16,12 +16,14 @@ import pytest
 
 from trainiq.connectors.base import AcquisitionStrategy
 from trainiq.connectors.strava_unofficial import (
+    ACTIVITY_STREAMS_PATH_TEMPLATE,
     ASSUMED_SESSION_LIFETIME_S,
     CRED_STRAVA_SESSION_COOKIE,
     CRED_STRAVA_SESSION_EXPIRES_AT,
     CRED_STRAVA_SESSION_OBTAINED_AT,
     DEFAULT_RETRY_AFTER_S,
     PROVIDER,
+    STREAM_TYPES,
     TRAINING_ACTIVITIES_PATH,
     StravaUnofficialConnector,
     StravaUnofficialHTTPError,
@@ -527,6 +529,147 @@ def test_download_network_level_failure_raises_transient_error(credential_store)
 
 def _response_page(models: list[dict], total: int) -> FakeResponse:
     return FakeResponse(200, _training_activities_body(models, total=total))
+
+
+# --- fetch_activity_streams() (issue #50) --------------------------------------
+
+def test_fetch_activity_streams_before_authenticate_raises_authentication_error_no_network_call(credential_store):
+    fake = FakeStravaUnofficialSession()
+    connector = StravaUnofficialConnector(credential_store, session=fake)
+
+    with pytest.raises(AuthenticationError):
+        connector.fetch_activity_streams("12345")
+    assert fake.get_calls == []
+
+
+def test_fetch_activity_streams_requests_correct_path_and_stream_types(credential_store):
+    fake = FakeStravaUnofficialSession()
+    fake.script_get_response(FakeResponse(200, {"heartrate": [100, 110]}))
+    connector = StravaUnofficialConnector(credential_store, session=fake)
+    _authenticate_with_cookie(connector, credential_store)
+
+    result = connector.fetch_activity_streams("12345")
+
+    assert result == {"heartrate": [100, 110]}
+    assert fake.get_calls[0]["url"] == (
+        f"https://www.strava.com{ACTIVITY_STREAMS_PATH_TEMPLATE.format(activity_id='12345')}"
+    )
+    assert fake.get_calls[0]["params"] == {"stream_types[]": STREAM_TYPES}
+
+
+def test_fetch_activity_streams_404_returns_none_not_transient_error(credential_store):
+    """Issue #50: unlike every other existing caller of _authenticated_get,
+    a 404 here means the activity is gone/private — not a retryable
+    condition."""
+    fake = FakeStravaUnofficialSession()
+    fake.script_get_response(FakeResponse(404, {}))
+    connector = StravaUnofficialConnector(credential_store, session=fake)
+    _authenticate_with_cookie(connector, credential_store)
+
+    assert connector.fetch_activity_streams("12345") is None
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_fetch_activity_streams_401_403_raises_authentication_error_clears_cookie(credential_store, status):
+    fake = FakeStravaUnofficialSession()
+    fake.script_get_response(FakeResponse(status, {}))
+    connector = StravaUnofficialConnector(credential_store, session=fake)
+    _authenticate_with_cookie(connector, credential_store)
+
+    with pytest.raises(AuthenticationError):
+        connector.fetch_activity_streams("12345")
+    assert credential_store.exists(PROVIDER, CRED_STRAVA_SESSION_COOKIE) is False
+
+
+def test_fetch_activity_streams_redirect_raises_authentication_error(credential_store):
+    fake = FakeStravaUnofficialSession()
+    fake.script_get_response(FakeResponse(302, headers={"Location": "https://www.strava.com/login"}))
+    connector = StravaUnofficialConnector(credential_store, session=fake)
+    _authenticate_with_cookie(connector, credential_store)
+
+    with pytest.raises(AuthenticationError):
+        connector.fetch_activity_streams("12345")
+
+
+def test_fetch_activity_streams_html_body_raises_authentication_error(credential_store):
+    fake = FakeStravaUnofficialSession()
+    fake.script_get_response(FakeResponse(200, raise_on_json=True))
+    connector = StravaUnofficialConnector(credential_store, session=fake)
+    _authenticate_with_cookie(connector, credential_store)
+
+    with pytest.raises(AuthenticationError):
+        connector.fetch_activity_streams("12345")
+
+
+def test_fetch_activity_streams_429_raises_transient_error_with_retry_after(credential_store):
+    fake = FakeStravaUnofficialSession()
+    fake.script_get_response(FakeResponse(429, {}, headers={"Retry-After": "45"}))
+    connector = StravaUnofficialConnector(credential_store, session=fake)
+    _authenticate_with_cookie(connector, credential_store)
+
+    with pytest.raises(TransientError) as excinfo:
+        connector.fetch_activity_streams("12345")
+    assert excinfo.value.retry_after_s == 45.0
+
+
+def test_fetch_activity_streams_5xx_raises_transient_error(credential_store):
+    fake = FakeStravaUnofficialSession()
+    fake.script_get_response(FakeResponse(503, {}))
+    connector = StravaUnofficialConnector(credential_store, session=fake)
+    _authenticate_with_cookie(connector, credential_store)
+
+    with pytest.raises(TransientError):
+        connector.fetch_activity_streams("12345")
+
+
+def test_existing_callers_404_still_raises_transient_error_unaffected_by_not_found_ok(credential_store):
+    """Regression guard: adding `not_found_ok` to _authenticated_get must
+    not change behavior for every existing caller, which doesn't pass it."""
+    fake = FakeStravaUnofficialSession()
+    fake.script_get_response(FakeResponse(404, {}))
+    connector = StravaUnofficialConnector(credential_store, session=fake)
+    _authenticate_with_cookie(connector, credential_store)
+
+    with pytest.raises(TransientError):
+        connector.download()
+
+
+# --- normalize(): issue #50 streams merge ------------------------------------
+
+def test_normalize_streams_keys_absent_avg_hr_max_hr_pace_stay_none_moving_time_falls_back(credential_store):
+    """Before enrichment ever runs (no `_streams_*` keys on raw), avg_hr/
+    max_hr/avg_pace_s_per_km stay None and moving_time_s falls back to the
+    (possibly wrong, pre-#50) moving_time_raw — unchanged from before this
+    issue."""
+    fake = FakeStravaUnofficialSession()
+    connector = StravaUnofficialConnector(credential_store, session=fake)
+
+    result = connector.normalize(_WEB_ACTIVITY_RECORD)
+
+    assert result["avg_hr"] is None
+    assert result["max_hr"] is None
+    assert result["avg_pace_s_per_km"] is None
+    assert result["moving_time_s"] == _WEB_ACTIVITY_RECORD["moving_time_raw"]
+
+
+def test_normalize_streams_keys_present_override_moving_time_and_populate_hr_pace(credential_store):
+    fake = FakeStravaUnofficialSession()
+    connector = StravaUnofficialConnector(credential_store, session=fake)
+    raw = {
+        **_WEB_ACTIVITY_RECORD,
+        "_streams_avg_hr": 113,
+        "_streams_max_hr": 160,
+        "_streams_moving_time_s": 3733,
+        "_streams_avg_pace_s_per_km": 463.0,
+    }
+
+    result = connector.normalize(raw)
+
+    assert result["avg_hr"] == 113
+    assert result["max_hr"] == 160
+    assert result["moving_time_s"] == 3733  # overrides moving_time_raw (3500)
+    assert result["moving_time_s"] != raw["moving_time_raw"]
+    assert result["avg_pace_s_per_km"] == pytest.approx(463.0)
 
 
 # --- normalize() / _extract_start_time_iso() ------------------------------------

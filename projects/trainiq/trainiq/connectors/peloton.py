@@ -1179,6 +1179,12 @@ class PelotonConnector(Connector):
             # (possibly fractional) value for an attempted, successful
             # lookup.
             "difficulty_estimate": raw.get("_difficulty_estimate"),
+            # Issue #50: total_output_kj, from the SAME raw `total_work`
+            # (joules) field avg_power already derives above — no new
+            # network call, no new attempted/not-attempted case (unlike
+            # the performance-endpoint fields): every workout's raw payload
+            # either has total_work or doesn't, same as calories.
+            "total_output_kj": total_work / 1000 if total_work is not None else None,
         }
 
     def extract_resume_cursor(self, normalized: dict[str, Any]) -> str | None:

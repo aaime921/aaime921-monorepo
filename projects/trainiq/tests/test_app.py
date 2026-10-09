@@ -13,13 +13,15 @@ from pathlib import Path
 
 import pytest
 
-from trainiq.app import _build_configured_connectors, main
+from trainiq.app import _build_configured_connectors, _run_strava_streams_enrichment, main
 from trainiq.config import set_eufy_device_id
 from trainiq.connectors.eufy import PROVIDER as EUFY_PROVIDER
 from trainiq.connectors.peloton import PROVIDER as PELOTON_PROVIDER
 from trainiq.connectors.strava import PROVIDER as STRAVA_PROVIDER
 from trainiq.connectors.strava_unofficial import CRED_STRAVA_SESSION_COOKIE as STRAVA_UNOFFICIAL_CRED_SESSION_COOKIE
+from trainiq.connectors.strava_unofficial import CRED_STRAVA_SESSION_EXPIRES_AT
 from trainiq.connectors.strava_unofficial import PROVIDER as STRAVA_UNOFFICIAL_PROVIDER
+from trainiq.connectors.strava_unofficial import StravaUnofficialConnector
 from trainiq.credentials.store import CredentialStore
 from trainiq.storage.schema import open_db
 
@@ -577,3 +579,122 @@ def test_main_configure_flag_with_one_connector_shows_header_and_preserves_decli
 
     store = CredentialStore(conn=_open_db(db_path))
     assert store.get(STRAVA_PROVIDER, "refresh_token") == "existing-token"
+
+
+# --- _run_strava_streams_enrichment() post-sync hook (issue #50) -----------
+
+class _FakeReporter:
+    def __init__(self):
+        self.lines: list[str] = []
+
+    def info(self, msg):
+        self.lines.append(msg)
+
+    def warning(self, msg):
+        self.lines.append(msg)
+
+
+class _FakeStreamsSession:
+    def __init__(self, response_body: dict):
+        self._body = response_body
+        self.get_calls: list[dict] = []
+
+    def get(self, url, params=None, headers=None):
+        self.get_calls.append({"url": url, "params": params, "headers": headers})
+
+        class _Resp:
+            status_code = 200
+
+            def json(_self):
+                return self._body
+
+        return _Resp()
+
+
+def _configured_strava_unofficial(db, session) -> StravaUnofficialConnector:
+    import time as _time
+    from datetime import datetime, timedelta, timezone
+
+    store = CredentialStore(conn=db)
+    store.set(STRAVA_UNOFFICIAL_PROVIDER, STRAVA_UNOFFICIAL_CRED_SESSION_COOKIE, "cookie")
+    store.set(
+        STRAVA_UNOFFICIAL_PROVIDER, CRED_STRAVA_SESSION_EXPIRES_AT,
+        str(int((datetime.now(timezone.utc) + timedelta(days=7)).timestamp())),
+    )
+    return StravaUnofficialConnector(store, session=session)
+
+
+def test_no_strava_unofficial_connector_is_a_no_op(db):
+    reporter = _FakeReporter()
+
+    _run_strava_streams_enrichment(db, connectors=[], reporter=reporter)
+
+    assert reporter.lines == []
+
+
+def test_enriches_eligible_strava_unofficial_activity_and_reports_summary(db):
+    db.execute(
+        """
+        INSERT INTO normalized_activities
+            (provider, external_id, start_time, duration_s, discipline, distance_m,
+             avg_hr, max_hr, avg_power, max_power, calories,
+             training_load, training_load_method, source_confidence)
+        VALUES (?, 's1', '2026-01-05T07:00:00+00:00', 1800, 'running', NULL,
+                NULL, NULL, NULL, NULL, NULL, NULL, 'unknown', 1.0)
+        """,
+        (STRAVA_UNOFFICIAL_PROVIDER,),
+    )
+    db.execute(
+        "INSERT INTO raw_activities (provider, external_id, payload_json, fetched_at) "
+        "VALUES (?, 's1', '{}', '2026-01-05T07:00:00+00:00')",
+        (STRAVA_UNOFFICIAL_PROVIDER,),
+    )
+    db.commit()
+    session = _FakeStreamsSession({"heartrate": [100, 110], "time": [0, 10]})
+    connector = _configured_strava_unofficial(db, session)
+    reporter = _FakeReporter()
+
+    _run_strava_streams_enrichment(db, connectors=[connector], reporter=reporter)
+
+    assert len(session.get_calls) == 1
+    row = dict(db.execute(
+        "SELECT streams_fetch_status FROM normalized_activities WHERE provider = ? AND external_id = 's1'",
+        (STRAVA_UNOFFICIAL_PROVIDER,),
+    ).fetchone())
+    assert row["streams_fetch_status"] == "ok"
+    assert any("streams: processed 1" in line for line in reporter.lines)
+
+
+def test_auth_failure_during_enrichment_is_reported_not_raised(db):
+    """Graceful degradation (ADR-009): a 401 mid-enrichment must not crash
+    main()'s post-sync step — reported via the reporter, swallowed here."""
+    db.execute(
+        """
+        INSERT INTO normalized_activities
+            (provider, external_id, start_time, duration_s, discipline, distance_m,
+             avg_hr, max_hr, avg_power, max_power, calories,
+             training_load, training_load_method, source_confidence)
+        VALUES (?, 's1', '2026-01-05T07:00:00+00:00', 1800, 'running', NULL,
+                NULL, NULL, NULL, NULL, NULL, NULL, 'unknown', 1.0)
+        """,
+        (STRAVA_UNOFFICIAL_PROVIDER,),
+    )
+    db.commit()
+
+    class _401Session:
+        def get(self, url, params=None, headers=None):
+            class _Resp:
+                status_code = 401
+                headers = {}
+
+                def json(_self):
+                    return {}
+
+            return _Resp()
+
+    connector = _configured_strava_unofficial(db, _401Session())
+    reporter = _FakeReporter()
+
+    _run_strava_streams_enrichment(db, connectors=[connector], reporter=reporter)  # must not raise
+
+    assert any("streams enrichment stopped" in line for line in reporter.lines)

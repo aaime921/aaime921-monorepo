@@ -231,6 +231,7 @@ def test_v2_to_v3_migration_preserves_existing_data(tmp_path):
     # that already exist.
     conn = sqlite3.connect(db_path)
     conn.execute("DROP TABLE athlete_profile")
+    conn.execute("DROP TABLE activity_tracks")  # issue #50's v11 table
     conn.execute("DROP TABLE weigh_ins")
     conn.execute(
         """
@@ -572,3 +573,58 @@ def test_v7_migration_leaves_pre_existing_rows_null_not_false_or_zero(tmp_path):
     ).fetchone()
     conn.close()
     assert row == (None, None, None)
+
+
+# --- Issue #50: Strava streams (HR, pace, GPS) + Peloton total output -------
+
+def test_v11_migration_adds_streams_columns_and_activity_tracks_table(tmp_path):
+    db_path = tmp_path / "trainiq.db"
+    version = schema.migrate(db_path)
+    assert version == schema.CURRENT_SCHEMA_VERSION
+
+    conn = sqlite3.connect(db_path)
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(normalized_activities)")}
+    tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    track_columns = {row[1] for row in conn.execute("PRAGMA table_info(activity_tracks)")}
+    conn.close()
+
+    assert {"avg_pace_s_per_km", "streams_fetch_status", "total_output_kj"} <= columns
+    assert "activity_tracks" in tables
+    assert {"activity_id", "point_count", "encoding", "track"} <= track_columns
+
+
+def test_v11_migration_leaves_pre_existing_rows_null_not_fabricated(tmp_path):
+    """Same proof as v7's elevation/moving-time test, for this migration's
+    3 new nullable columns: a pre-existing row must read back NULL, never
+    a fabricated default, and have no activity_tracks row."""
+    db_path = tmp_path / "trainiq.db"
+    conn = sqlite3.connect(db_path)
+    conn.executescript(schema._MIGRATIONS[1])
+    conn.execute("UPDATE schema_version SET version = 1")
+    conn.execute(
+        """
+        INSERT INTO normalized_activities
+            (provider, external_id, start_time, duration_s, discipline, source_confidence)
+        VALUES ('strava_unofficial', 'pre-existing-1', '2026-01-01T00:00:00Z', 1800, 'running', 0.5)
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    version = schema.migrate(db_path)
+    assert version == schema.CURRENT_SCHEMA_VERSION
+
+    conn = sqlite3.connect(db_path)
+    row = conn.execute(
+        "SELECT avg_pace_s_per_km, streams_fetch_status, total_output_kj FROM normalized_activities "
+        "WHERE external_id = 'pre-existing-1'"
+    ).fetchone()
+    activity_id = conn.execute(
+        "SELECT id FROM normalized_activities WHERE external_id = 'pre-existing-1'"
+    ).fetchone()[0]
+    track_row = conn.execute(
+        "SELECT 1 FROM activity_tracks WHERE activity_id = ?", (activity_id,)
+    ).fetchone()
+    conn.close()
+    assert row == (None, None, None)
+    assert track_row is None

@@ -25,7 +25,7 @@ from pathlib import Path
 
 from trainiq.storage.backfill import backfill_weigh_in_plausibility, decouple_weigh_in_plausibility
 
-CURRENT_SCHEMA_VERSION = 10
+CURRENT_SCHEMA_VERSION = 11
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -236,6 +236,27 @@ _MIGRATIONS: dict[int, str] = {
     # Renumbered 8 -> 10 when merged after Issues #48 (v7) and #58 (v8).
     10: """
         ALTER TABLE normalized_activities ADD COLUMN performance_fetch_status TEXT;
+    """,
+    # Issue #50: Strava per-activity streams (HR, pace, GPS) + Peloton ride
+    # total output. avg_pace_s_per_km/total_output_kj are nullable
+    # pass-throughs, same all-nullable pattern as every prior enrichment
+    # column (never fabricated). streams_fetch_status is a dedicated
+    # "attempted this pass or not" marker for the separate streams
+    # enrichment step (trainiq/connectors/strava_streams.py) — written only
+    # by that step's own narrow UPDATE, never by upsert_normalized_activity().
+    # activity_tracks holds the GPS track as a compact zlib-compressed JSON
+    # blob, one row per activity, no duplicates (INSERT OR REPLACE keyed on
+    # activity_id).
+    11: """
+        ALTER TABLE normalized_activities ADD COLUMN avg_pace_s_per_km REAL;
+        ALTER TABLE normalized_activities ADD COLUMN streams_fetch_status TEXT;
+        ALTER TABLE normalized_activities ADD COLUMN total_output_kj REAL;
+        CREATE TABLE activity_tracks (
+            activity_id INTEGER PRIMARY KEY REFERENCES normalized_activities(id),
+            point_count INTEGER NOT NULL,
+            encoding TEXT NOT NULL,
+            track BLOB NOT NULL
+        );
     """,
 }
 

@@ -408,3 +408,93 @@ def test_renormalize_peloton_never_wipes_already_backfilled_class_metadata(db):
     # already-backfilled value rather than null it out — the exact
     # regression issue #57 exists to prevent.
     assert row["distance_m"] == 1216.3
+
+
+# --- Issue #50: streams enrichment survives renormalize ---------------------
+
+def test_renormalize_reproduces_enriched_streams_values_with_zero_network_io(db, connector):
+    """The merge contract this issue's architecture doc calls load-bearing:
+    once trainiq.connectors.strava_streams.enrich_strava_streams() has
+    merged `_streams_*` keys into raw_activities.payload_json, a later
+    renormalize pass (no new network I/O) must reproduce the same avg_hr/
+    max_hr/moving_time_s/avg_pace_s_per_km — not wipe them back to None."""
+    payload = {
+        **_raw_payload(101, "Run", "Run"),
+        "moving_time_raw": 4408,  # the known-wrong list-feed value (#48)
+        "elapsed_time_raw": 4408,
+        "_streams_status": "ok",
+        "_streams_avg_hr": 113,
+        "_streams_max_hr": 160,
+        "_streams_moving_time_s": 3733,
+        "_streams_avg_pace_s_per_km": 463.0,
+    }
+    db.execute(
+        "INSERT INTO raw_activities (provider, external_id, payload_json, fetched_at) "
+        "VALUES (?, ?, ?, ?)",
+        (PROVIDER, "101", json.dumps(payload), "2026-10-09T00:00:00+00:00"),
+    )
+    db.execute(
+        """
+        INSERT INTO normalized_activities
+            (provider, external_id, start_time, duration_s, discipline, distance_m,
+             avg_hr, max_hr, avg_power, max_power, calories,
+             training_load, training_load_method, source_confidence, streams_fetch_status)
+        VALUES (?, '101', ?, 4408, 'running', 8047.6, 113, 160, NULL, NULL, NULL, NULL, 'unknown', 0.5, 'ok')
+        """,
+        (PROVIDER, datetime(2026, 1, 5, 7, 0, 0, tzinfo=timezone.utc).isoformat()),
+    )
+    db.commit()
+
+    result = renormalize_provider(db, PROVIDER, connector)
+    db.commit()
+
+    assert result.updated == 1
+    row = dict(db.execute(
+        "SELECT * FROM normalized_activities WHERE provider = ? AND external_id = '101'", (PROVIDER,)
+    ).fetchone())
+    assert row["avg_hr"] == 113
+    assert row["max_hr"] == 160
+    assert row["moving_time_s"] == 3733  # NOT the stale 4408 list-feed value
+    assert row["avg_pace_s_per_km"] == pytest.approx(463.0)
+    # streams_fetch_status is untouched by renormalize/upsert — still
+    # whatever the enrichment step itself wrote.
+    assert row["streams_fetch_status"] == "ok"
+
+
+def test_renormalize_peloton_total_output_kj_from_already_stored_total_work(db):
+    """total_output_kj needs no new fetch — it's derived from the same
+    raw `total_work` field avg_power already reads, so a renormalize pass
+    reproduces it from the already-stored raw payload alone."""
+    db.execute(
+        "INSERT INTO raw_activities (provider, external_id, payload_json, fetched_at) "
+        "VALUES (?, 'w1', ?, ?)",
+        (
+            PELOTON_PROVIDER,
+            json.dumps({
+                "id": "w1", "start_time": 1700000000, "end_time": 1700001800,
+                "fitness_discipline": "cycling", "total_work": 250000.0, "calories": 400,
+            }),
+            "2026-10-09T00:00:00+00:00",
+        ),
+    )
+    db.execute(
+        """
+        INSERT INTO normalized_activities
+            (provider, external_id, start_time, duration_s, discipline, distance_m,
+             avg_hr, max_hr, avg_power, max_power, calories,
+             training_load, training_load_method, source_confidence)
+        VALUES (?, 'w1', ?, 1800, 'cycling', NULL, NULL, NULL, NULL, NULL, NULL, NULL, 'unknown', 0.5)
+        """,
+        (PELOTON_PROVIDER, datetime(2026, 1, 5, 7, 0, 0, tzinfo=timezone.utc).isoformat()),
+    )
+    db.commit()
+
+    peloton_connector = PelotonConnector(CredentialStore(conn=db), session=object())
+    renormalize_provider(db, PELOTON_PROVIDER, peloton_connector)
+    db.commit()
+
+    row = dict(db.execute(
+        "SELECT total_output_kj FROM normalized_activities WHERE provider = ? AND external_id = 'w1'",
+        (PELOTON_PROVIDER,),
+    ).fetchone())
+    assert row["total_output_kj"] == pytest.approx(250.0)

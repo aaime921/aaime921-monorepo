@@ -68,6 +68,8 @@ def _base_record(**overrides) -> dict:
         "hr_zone_5_s": None,
         "effort_points": None,
         "performance_fetch_status": None,
+        "avg_pace_s_per_km": None,
+        "total_output_kj": None,
     }
     record.update(overrides)
     return record
@@ -426,3 +428,92 @@ def test_update_with_hr_fields_none_does_not_affect_unconditional_hr_zone_column
     assert row["performance_fetch_status"] == "ok"  # COALESCE-preserved
     assert row["hr_zone_1_s"] is None            # unconditional-overwritten
     assert row["effort_points"] is None          # unconditional-overwritten
+
+
+# --- Issue #50: avg_pace_s_per_km, total_output_kj. Unconditional-
+# overwrite group (like moving_time_s/elevation_gain_m), NOT COALESCE —
+# both are always fully re-derivable from the stored raw payload with no
+# "didn't attempt this pass" case of their own; the enrichment fetch's own
+# attempted-or-not state lives in streams_fetch_status, which this
+# function never touches at all (see upsert_normalized_activity()'s
+# docstring).
+
+def test_insert_with_avg_pace_and_total_output_populated_stores_as_given(db):
+    record = _base_record(avg_pace_s_per_km=463.0, total_output_kj=250.5)
+
+    outcome = upsert_normalized_activity(db, record)
+    db.commit()
+
+    assert outcome == "inserted"
+    row = dict(db.execute(
+        "SELECT * FROM normalized_activities WHERE provider = ? AND external_id = ?",
+        (record["provider"], record["external_id"]),
+    ).fetchone())
+    assert row["avg_pace_s_per_km"] == pytest.approx(463.0)
+    assert row["total_output_kj"] == pytest.approx(250.5)
+
+
+def test_update_with_avg_pace_and_total_output_none_overwrites_existing_to_null(db):
+    """The deliberate opposite of the #46/#47 COALESCE proofs above: a
+    resync with avg_pace_s_per_km/total_output_kj now None (no streams
+    enriched yet / no total_work this pass) must overwrite, not preserve —
+    same reasoning as hr_zone_*_s."""
+    first = _base_record(avg_pace_s_per_km=463.0, total_output_kj=250.5)
+    upsert_normalized_activity(db, first)
+    db.commit()
+
+    second = _base_record()
+    outcome = upsert_normalized_activity(db, second)
+    db.commit()
+
+    assert outcome == "updated"
+    row = dict(db.execute(
+        "SELECT * FROM normalized_activities WHERE provider = ? AND external_id = ?",
+        (second["provider"], second["external_id"]),
+    ).fetchone())
+    assert row["avg_pace_s_per_km"] is None
+    assert row["total_output_kj"] is None
+
+
+def test_update_with_real_avg_pace_and_total_output_overwrites(db):
+    first = _base_record(avg_pace_s_per_km=500.0, total_output_kj=100.0)
+    upsert_normalized_activity(db, first)
+    db.commit()
+
+    second = _base_record(avg_pace_s_per_km=463.0, total_output_kj=250.5)
+    upsert_normalized_activity(db, second)
+    db.commit()
+
+    row = dict(db.execute(
+        "SELECT * FROM normalized_activities WHERE provider = ? AND external_id = ?",
+        (second["provider"], second["external_id"]),
+    ).fetchone())
+    assert row["avg_pace_s_per_km"] == pytest.approx(463.0)
+    assert row["total_output_kj"] == pytest.approx(250.5)
+
+
+def test_upsert_never_writes_streams_fetch_status(db):
+    """streams_fetch_status is written ONLY by
+    trainiq.connectors.strava_streams's own narrow UPDATE — proving
+    upsert_normalized_activity() leaves it alone entirely, in either
+    direction, regardless of what the incoming record dict happens to
+    contain."""
+    first = _base_record()
+    upsert_normalized_activity(db, first)
+    db.commit()
+    db.execute(
+        "UPDATE normalized_activities SET streams_fetch_status = 'ok' "
+        "WHERE provider = ? AND external_id = ?",
+        (first["provider"], first["external_id"]),
+    )
+    db.commit()
+
+    second = _base_record()
+    upsert_normalized_activity(db, second)
+    db.commit()
+
+    row = dict(db.execute(
+        "SELECT * FROM normalized_activities WHERE provider = ? AND external_id = ?",
+        (second["provider"], second["external_id"]),
+    ).fetchone())
+    assert row["streams_fetch_status"] == "ok"  # untouched by the re-upsert
