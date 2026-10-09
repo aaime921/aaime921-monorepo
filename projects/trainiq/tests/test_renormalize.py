@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pytest
 
+from trainiq.connectors.base import RecordKind
 from trainiq.connectors.strava_unofficial import PROVIDER, StravaUnofficialConnector
 from trainiq.credentials.store import CredentialStore
 from trainiq.normalization.renormalize import renormalize_provider
@@ -206,6 +207,77 @@ def test_renormalize_unknown_provider_reads_zero_rows(db, connector):
     assert result.read == 0
     assert result.inserted == 0
     assert result.updated == 0
+
+
+# --- Issue #45: raw_transform, used by scripts/renormalize_peloton_distance.py ---
+
+class _FakeConnector:
+    """Captures exactly what `raw` dict it was called with — enough to
+    prove raw_transform ran (or didn't) before connector.normalize()."""
+
+    record_kind = RecordKind.ACTIVITY
+
+    def __init__(self):
+        self.seen_raw: list[dict] = []
+
+    def normalize(self, raw: dict) -> dict:
+        self.seen_raw.append(raw)
+        return {
+            "provider": "fake",
+            "external_id": str(raw["id"]),
+            "start_time": "2026-01-01T00:00:00+00:00",
+            "duration_s": 1800,
+            "discipline_raw": "cycling",
+            "avg_hr": None, "max_hr": None, "avg_power": None, "max_power": None,
+            "distance_m": raw.get("distance"),
+            "calories": None,
+            "synced_at": "2026-01-01T00:00:00+00:00",
+        }
+
+
+def test_renormalize_applies_raw_transform_before_normalize(db):
+    db.execute(
+        "INSERT INTO raw_activities (provider, external_id, payload_json, fetched_at) VALUES (?, ?, ?, ?)",
+        ("fake", "1", json.dumps({"id": 1, "distance": 13.1816}), "2026-10-08T00:00:00+00:00"),
+    )
+    db.commit()
+    fake_connector = _FakeConnector()
+
+    renormalize_provider(
+        db, "fake", fake_connector,
+        raw_transform=lambda raw: {**raw, "_distance_unit": "mi"},
+    )
+
+    assert fake_connector.seen_raw == [{"id": 1, "distance": 13.1816, "_distance_unit": "mi"}]
+    row = db.execute(
+        "SELECT distance_m FROM normalized_activities WHERE provider = ? AND external_id = ?",
+        ("fake", "1"),
+    ).fetchone()
+    assert row["distance_m"] == 13.1816
+
+
+def test_renormalize_omitted_raw_transform_is_byte_identical_to_today(db, connector):
+    """Proves the strava_unofficial call site (issue #36) is unaffected:
+    omitting raw_transform entirely must behave exactly as before this
+    parameter existed."""
+    _seed_raw_and_stale_normalized(db)
+
+    without_param = renormalize_provider(db, PROVIDER, connector)
+    db.commit()
+    rows_without = {
+        row["external_id"]: dict(row)
+        for row in db.execute("SELECT * FROM normalized_activities WHERE provider = ?", (PROVIDER,)).fetchall()
+    }
+
+    with_none = renormalize_provider(db, PROVIDER, connector, raw_transform=None)
+    db.commit()
+    rows_with_none = {
+        row["external_id"]: dict(row)
+        for row in db.execute("SELECT * FROM normalized_activities WHERE provider = ?", (PROVIDER,)).fetchall()
+    }
+
+    assert without_param == with_none
+    assert rows_without == rows_with_none
 
 
 def test_renormalize_corrects_bst_shifted_start_time(db, connector):

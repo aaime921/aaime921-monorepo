@@ -444,7 +444,7 @@ def test_download_fetches_user_id_then_paginated_workouts(credential_store):
 
     workouts = connector.download()
 
-    assert workouts == [{"id": "w1"}]
+    assert workouts == [{"id": "w1", "_distance_unit": None}]
     assert fake.get_calls[0]["url"] == "https://api.onepeloton.com/api/me"
     assert fake.get_calls[1]["url"] == "https://api.onepeloton.com/api/user/u1/workouts"
     assert fake.get_calls[1]["params"] == {"page": 0}
@@ -463,7 +463,7 @@ def test_download_walks_all_pages_until_show_next_is_falsy(credential_store):
 
     workouts = connector.download()
 
-    assert workouts == [{"id": "w1"}, {"id": "w2"}]
+    assert workouts == [{"id": "w1", "_distance_unit": None}, {"id": "w2", "_distance_unit": None}]
     assert fake.get_calls[1]["params"] == {"page": 0}
     assert fake.get_calls[2]["params"] == {"page": 1}
 
@@ -486,10 +486,54 @@ def test_download_walks_three_pages_not_just_a_hardcoded_two(credential_store):
 
     workouts = connector.download()
 
-    assert workouts == [{"id": "w1"}, {"id": "w2"}, {"id": "w3"}]
+    assert workouts == [
+        {"id": "w1", "_distance_unit": None},
+        {"id": "w2", "_distance_unit": None},
+        {"id": "w3", "_distance_unit": None},
+    ]
     assert fake.get_calls[1]["params"] == {"page": 0}
     assert fake.get_calls[2]["params"] == {"page": 1}
     assert fake.get_calls[3]["params"] == {"page": 2}
+
+
+def test_download_resolves_recognized_account_unit_and_attaches_to_every_workout(credential_store):
+    """Issue #45: the account's distance unit is resolved once per
+    download() call (from /api/me) and attached to every workout dict —
+    never omitted, even across multiple pages."""
+    credential_store.set(PROVIDER, CRED_EMAIL, "a@b.com")
+    credential_store.set(PROVIDER, CRED_PASSWORD, "pw")
+    fake = FakePelotonSession()
+    fake.script_post_response(_login_success_response())
+    fake.script_get_response(FakeResponse(200, {"id": "u1", "distance_unit": "mi"}))
+    fake.script_get_response(FakeResponse(200, {"data": [{"id": "w1"}], "show_next": True}))
+    fake.script_get_response(FakeResponse(200, {"data": [{"id": "w2"}], "show_next": False}))
+    connector = PelotonConnector(credential_store, session=fake)
+    connector.authenticate()
+
+    workouts = connector.download()
+
+    assert workouts == [
+        {"id": "w1", "_distance_unit": "mi"},
+        {"id": "w2", "_distance_unit": "mi"},
+    ]
+
+
+def test_download_missing_account_unit_field_attaches_none_not_omitted(credential_store):
+    """Issue #45: AC3 — a missing/unrecognized unit must never be guessed
+    at. download() still always sets the key, to None, so normalize() can
+    use .get() without distinguishing "absent" from "present but None"."""
+    credential_store.set(PROVIDER, CRED_EMAIL, "a@b.com")
+    credential_store.set(PROVIDER, CRED_PASSWORD, "pw")
+    fake = FakePelotonSession()
+    fake.script_post_response(_login_success_response())
+    fake.script_get_response(FakeResponse(200, {"id": "u1"}))
+    fake.script_get_response(FakeResponse(200, {"data": [{"id": "w1"}], "show_next": False}))
+    connector = PelotonConnector(credential_store, session=fake)
+    connector.authenticate()
+
+    workouts = connector.download()
+
+    assert workouts == [{"id": "w1", "_distance_unit": None}]
 
 
 def test_download_rate_limited_honors_retry_after(credential_store):
@@ -550,10 +594,16 @@ _REAL_RECORD_WITH_EFFORT_ZONES = {
 
 
 def test_normalize_maps_cycling_class_with_power(credential_store):
+    """Issue #45: the real captured record itself carries no `_distance_unit`
+    key (download() didn't attach one until this issue's fix), so a km
+    unit is supplied explicitly here to keep this test's distance_m
+    assertion meaningful (AC2 — km-account regression coverage) rather than
+    relying on the old, since-removed always-km assumption."""
     fake = FakePelotonSession()
     connector = PelotonConnector(credential_store, session=fake)
+    raw = {**_REAL_RECORD_NO_EFFORT_ZONES, "_distance_unit": "km"}
 
-    result = connector.normalize(_REAL_RECORD_NO_EFFORT_ZONES)
+    result = connector.normalize(raw)
 
     assert result["discipline_raw"] == "cycling"
     assert result["duration_s"] == 299
@@ -645,6 +695,121 @@ def test_normalize_logs_unrecognized_discipline_without_dropping_the_record(cred
 
     assert result["discipline_raw"] == "underwater_basket_weaving"  # preserved, not dropped
     assert result["external_id"] == "3"
+
+
+# --- Issue #45: distance_m depends on the account's distance unit, never
+# a hard-coded one ------------------------------------------------------
+
+def test_normalize_mi_account_converts_distance_correctly(credential_store):
+    """AC1: a mi-unit account's distance_m matches the issue's own
+    Strava-confirmed figure (21213.7 m) to within 1% — this is the
+    acceptance bar AC1 actually asks for, not exact float equality."""
+    fake = FakePelotonSession()
+    connector = PelotonConnector(credential_store, session=fake)
+    raw = {**_REAL_RECORD_NO_EFFORT_ZONES, "distance": 13.1816, "_distance_unit": "mi"}
+
+    result = connector.normalize(raw)
+
+    assert result["distance_m"] == pytest.approx(13.1816 * 1609.344)
+    assert result["distance_m"] == pytest.approx(21213.7, rel=0.01)
+
+
+def test_normalize_km_account_converts_distance_correctly(credential_store):
+    """AC2: a km-unit account must not regress — same conversion issue #5
+    originally assumed for every account, now scoped to accounts that are
+    actually km."""
+    fake = FakePelotonSession()
+    connector = PelotonConnector(credential_store, session=fake)
+    raw = {**_REAL_RECORD_NO_EFFORT_ZONES, "distance": 21.2137, "_distance_unit": "km"}
+
+    result = connector.normalize(raw)
+
+    assert result["distance_m"] == pytest.approx(21213.7)
+
+
+@pytest.mark.parametrize(
+    "distance_unit",
+    [
+        pytest.param(None, id="key_present_none"),
+        pytest.param("furlongs", id="unrecognized_value"),
+    ],
+)
+def test_normalize_unresolved_unit_with_real_distance_yields_none_and_warns(credential_store, distance_unit):
+    """AC3/AC7: a real distance value whose unit is missing or unrecognized
+    must be logged and stored as NULL — never guessed. Covers both a
+    `_distance_unit` key explicitly set to None and an unrecognized token.
+    loguru output isn't captured by pytest's `caplog` (stdlib logging) —
+    see test_strava_walk_maps_to_other_explicitly_not_via_warning in
+    test_taxonomy.py for this codebase's actual working pattern, used here
+    too."""
+    import io
+
+    from loguru import logger
+
+    fake = FakePelotonSession()
+    connector = PelotonConnector(credential_store, session=fake)
+    raw = {**_REAL_RECORD_NO_EFFORT_ZONES, "distance": 13.1816, "_distance_unit": distance_unit}
+
+    log_stream = io.StringIO()
+    handler_id = logger.add(log_stream, format="{message}")
+    try:
+        result = connector.normalize(raw)
+    finally:
+        logger.remove(handler_id)
+
+    assert result["distance_m"] is None
+    assert "distance" in log_stream.getvalue().lower()
+
+
+def test_normalize_missing_distance_unit_key_entirely_yields_none_and_warns(credential_store):
+    """AC3/AC7: the `_distance_unit` key absent entirely (e.g. a raw dict
+    that predates this fix, re-normalized without a raw_transform) behaves
+    identically to the key being present and None."""
+    import io
+
+    from loguru import logger
+
+    fake = FakePelotonSession()
+    connector = PelotonConnector(credential_store, session=fake)
+    raw = {**_REAL_RECORD_NO_EFFORT_ZONES, "distance": 13.1816}
+    assert "_distance_unit" not in raw
+
+    log_stream = io.StringIO()
+    handler_id = logger.add(log_stream, format="{message}")
+    try:
+        result = connector.normalize(raw)
+    finally:
+        logger.remove(handler_id)
+
+    assert result["distance_m"] is None
+    assert "distance" in log_stream.getvalue().lower()
+
+
+def test_normalize_no_distance_at_all_yields_none_without_warning(credential_store):
+    """A workout with no `distance` field at all (e.g. a meditation
+    session) is not a unit problem — nothing to convert, nothing to warn
+    about, even though the unit is also unresolved."""
+    import io
+
+    from loguru import logger
+
+    fake = FakePelotonSession()
+    connector = PelotonConnector(credential_store, session=fake)
+    raw = {
+        "id": 9, "start_time": 1790014244, "end_time": 1790014544,
+        "fitness_discipline": "meditation", "total_work": None, "effort_zones": None,
+    }
+    assert "distance" not in raw
+
+    log_stream = io.StringIO()
+    handler_id = logger.add(log_stream, format="{message}")
+    try:
+        result = connector.normalize(raw)
+    finally:
+        logger.remove(handler_id)
+
+    assert result["distance_m"] is None
+    assert log_stream.getvalue() == ""
 
 
 # --- Issue #33: extract_resume_cursor() must always return a str --------
