@@ -1,88 +1,86 @@
 # Verification: Keep Elevation Gain, Moving Time and Indoor/Outdoor Flag (Strava)
 
 **Issue:** #48
-**PR:** #56 (`issue-48-strava-elevation-moving-time-indoor-flag` → `main`)
+**PR:** [#56](https://github.com/aaime921/aaime921-monorepo/pull/56) — `issue-48-strava-elevation-moving-time-indoor-flag`
 **Requirements:** [`docs/trainiq/requirements/48-strava-elevation-moving-time-indoor-flag.md`](../requirements/48-strava-elevation-moving-time-indoor-flag.md)
 **Architecture:** [`docs/trainiq/architecture/48-strava-elevation-moving-time-indoor-flag.md`](../architecture/48-strava-elevation-moving-time-indoor-flag.md)
+**PR head commit verified:** `4ab3407e516dbcb4963d73662bc8a9a62484f5d8` ("fix(trainiq): rebase issue #48 onto main, renumber schema migration to v7")
 
-## Method
+## Re-verification context
+
+This is a second QA pass. The first pass (see the earlier verification comment
+on the issue) found all 7 ACs passing in isolation but flagged PR #56 as
+unmergeable: its branch predated PR #55 (#46), and both PRs independently
+claimed schema migration version `6` on `normalized_activities` — a silent
+dict-key collision, not a diff conflict. Sent back to `stage:dev` for a
+rebase + renumber.
+
+The Developer's rework (commit `4ab3407`) merged current `main` into the
+branch and renumbered this issue's migration `6` → `7`
+(`CURRENT_SCHEMA_VERSION` bumped to `7`). This pass re-verifies the fix and
+re-runs every AC from scratch against the updated branch — not a rubber stamp
+of the Developer's own claim.
+
+## Mergeability check (the specific defect from the last QA pass)
+
+- `pull_request_read` on PR #56 now reports `mergeable_state: "clean"`
+  (previously `dirty`).
+- PR base SHA is `12c17ae51a94671bedf3f91aab46de1ad18d653b`, which is on
+  `origin/main`'s history. `origin/main` has advanced 3 commits past that
+  (docs-only: requirements/architecture for issues #57 and #58) — no code
+  overlap with this PR's files, so this does not reintroduce the collision.
+- Read `trainiq/storage/schema.py` directly on the PR branch: `_MIGRATIONS`
+  now has distinct keys `6` (issue #46's 6 class-metadata columns) and `7`
+  (this issue's 3 columns), each with its own distinct docstring recording
+  the renumbering. `CURRENT_SCHEMA_VERSION = 7`. No key collision.
+- **Verdict: mergeability defect is fixed.**
+
+## Test suite
 
 Checked out PR branch `issue-48-strava-elevation-moving-time-indoor-flag` at
-`30cb68a` in an isolated worktree, installed `projects/trainiq` into a clean
-venv, ran the full test suite, and read every changed production file
-(`schema.py`, both Strava connectors, `normalization/engine.py`,
-`sync/engine.py`) against the architecture doc's Interfaces/contracts
-section line by line. Separately, did a test-merge of `origin/main` into the
-PR branch (not committed) to check mergeability, since the branch's base
-predates a PR that merged after it was opened.
-
-## Pass/fail by acceptance criterion
-
-| AC | Description | Verdict | Notes |
-|----|------|------|-------|
-| 1 | `strava_unofficial` stores `elevation_gain_m`/`moving_time_s`/`is_indoor` from `elevation_gain_raw`/`moving_time_raw`/`trainer` | ✅ PASS | `normalize()` (`strava_unofficial.py:334-336`) uses `.get()` exactly per the architecture snippet. Covered by `test_normalize_outdoor_activity_maps_elevation_and_moving_time_is_not_indoor` and `test_normalize_indoor_trainer_ride_is_indoor_true`. |
-| 2 | Official `strava` connector populates the same three fields via `_activity_to_raw_dict()` + `normalize()` | ✅ PASS | Both methods updated (`strava.py:199-205` capture, `:237-239` map) — confirmed `_activity_to_raw_dict()` is not a no-op fix, matching the requirements doc's explicit warning. Covered by `test_outdoor_ride_with_elevation_round_trips_through_raw_dict_and_normalize` and `test_indoor_trainer_ride_round_trips_through_raw_dict_and_normalize` (full round-trip, not `normalize()` alone). |
-| 3 | Missing source data stays `None`, never defaulted (`is_indoor` never `False` by default) | ✅ PASS | All three sites use `.get()` with no second argument. Schema migration 6 has no `NOT NULL`/`DEFAULT`. Directly proven at the schema layer by `test_v6_migration_leaves_pre_existing_rows_null_not_false_or_zero` (asserts `(None, None, None)` on a pre-existing row) and at the connector layer by `test_all_three_fields_missing_normalize_to_none_not_fabricated` / `test_normalize_all_three_fields_missing_resolve_to_none_not_fabricated` — both assert `is None`, not just falsy, so a `0`/`False` regression would be caught. |
-| 4 | Existing `strava_unofficial` rows backfill via `renormalize_provider()` | ✅ PASS | `test_renormalize_backfills_elevation_moving_time_indoor_from_stored_raw_payload` runs an existing stored raw payload through `renormalize_provider()` end-to-end and asserts the three columns populate — not just that `normalize()` produces the right dict in isolation. |
-| 5 | Official-`strava` backfill constraint documented | ✅ PASS | `renormalize.py` (lines ~76-80) documents that official-`strava` rows synced before this fix lack the source fields in `raw_activities` entirely, so a fresh sync is required before re-normalization helps; also stated in the PR body. |
-| 6 | Tests cover outdoor, indoor-trainer, and all-missing cases | ✅ PASS | Confirmed present for both connectors (6 dedicated tests across `test_strava_connector.py` / `test_strava_unofficial_connector.py`), plus the schema-layer and renormalize-layer tests above. `moving_time_s` vs `duration_s` distinctness is also asserted (different fixture values for `moving_time_raw` vs `elapsed_time_raw`). |
-| 7 | All existing tests continue to pass | ✅ PASS (on PR branch alone) | `pytest` on the PR branch as checked out: 494 passed, 2 failed. The 2 failures (`test_peloton_csv_import.py::test_real_csv_import_is_idempotent`, `::test_real_csv_full_regression`) are a `FileNotFoundError` for a BO-local CSV path not present in this sandbox. Independently reproduced the identical 2 failures on `origin/main` alone (pre-existing, unrelated to this PR). |
-
-## Blocking defect found — not an AC, but blocks merge
-
-**The PR branch is stale relative to `origin/main` in a way that causes a real
-data-loss bug, not just a textual merge conflict.** PR #55 (issue #46,
-"Peloton class metadata + Strava name/sport_type") merged to `main` *after*
-PR #56 was opened, and it **also** added a schema migration numbered `6` to
-`normalized_activities` (`activity_title`, `instructor_name`, `class_type`,
-`planned_duration_s`, `provider_class_id`, `sport_type_raw`).
-
-`_MIGRATIONS` in `schema.py` is a plain Python `dict` literal keyed by
-integer version. Two entries with the same key `6` do not "merge" — the
-second one silently overwrites the first in the resulting dict. Concretely:
-a naive merge/rebase of PR #56 onto current `main` would compile and run,
-but whichever migration-6 block loses the key collision would **never run
-against any database**, silently dropping either this issue's three new
-columns or #46's six new columns (and `CURRENT_SCHEMA_VERSION` would still
-read `6`, so nothing would signal the loss — no error, no test failure,
-just missing columns the first time code tries to read/write them).
-
-Reproduced directly: test-merged `origin/main` into the PR branch locally
-(not committed/pushed). Git reports conflicts (not a silent dict collision
-at the git level, since both sides touch overlapping lines), but confirms
-the two migrations are genuinely both numbered `6`:
+`4ab3407`, fresh venv, `pip install -e ".[dev]"`, ran
+`pytest projects/trainiq/tests/` (from `projects/trainiq/`, full suite):
 
 ```
-CONFLICT (content): Merge conflict in projects/trainiq/trainiq/storage/schema.py
-CONFLICT (content): Merge conflict in projects/trainiq/trainiq/connectors/strava.py
-CONFLICT (content): Merge conflict in projects/trainiq/trainiq/sync/engine.py
-CONFLICT (content): Merge conflict in projects/trainiq/tests/test_storage.py
-CONFLICT (content): Merge conflict in projects/trainiq/tests/test_strava_connector.py
+518 passed, 2 failed in 35.91s
 ```
 
-The `strava.py` and `test_strava_connector.py` conflicts are from both
-issues editing the same functions (`_activity_to_raw_dict()`, `normalize()`,
-`_fake_activity()`) — resolvable by a human/developer combining both sets of
-fields, but not something QA should resolve by picking a side. The
-`schema.py` conflict specifically requires renumbering one migration to `7`
-(and updating `CURRENT_SCHEMA_VERSION` accordingly) — a real code decision,
-not a mechanical merge.
+The 2 failures (`test_real_csv_import_is_idempotent`,
+`test_real_csv_full_regression` in `test_peloton_csv_import.py`) are a
+missing BO-local fixture file (`/home/claude/peloton_work/aimea75_workouts.csv`),
+not present in this sandbox. Independently reproduced identically on
+`origin/main` (`e8b982c`, current tip) via a separate worktree — confirmed
+pre-existing and unrelated to this PR's change.
 
-GitHub's own `mergeable_state` for PR #56 already reports `dirty`
-(unmergeable against current `main`), consistent with this finding.
+## Acceptance criteria
 
-This is exactly the kind of conflict `docs/trainiq/PIPELINE.md`'s
-"Cross-issue dependencies" section describes as the Developer's job to
-resolve (rebase, renumber the migration, re-run the suite), not QA's — QA
-verifies, it doesn't rewrite the Developer's migration numbering or merge
-two in-flight schema changes.
+| # | Criterion | Verdict | Evidence |
+|---|---|---|---|
+| 1 | `strava_unofficial` stores `elevation_gain_m`/`moving_time_s`/`is_indoor` from `elevation_gain_raw`/`moving_time_raw`/`trainer` | ✅ PASS | `trainiq/connectors/strava_unofficial.py:334-336`, uses `.get()`. `test_normalize_outdoor_activity_maps_elevation_and_moving_time_is_not_indoor` passes. |
+| 2 | Official `strava` populates the same 3 fields via `_activity_to_raw_dict()` **and** `normalize()` | ✅ PASS | `trainiq/connectors/strava.py:199-205` (capture) and `:244-246` (map). `test_outdoor_ride_with_elevation_round_trips_through_raw_dict_and_normalize` and `test_indoor_trainer_ride_round_trips_through_raw_dict_and_normalize` exercise the full round trip, not `normalize()` in isolation. |
+| 3 | Missing source field → `None`, never defaulted (`is_indoor` never `False` for absent `trainer`) | ✅ PASS | Schema: `ALTER TABLE ... ADD COLUMN` with no `NOT NULL`/`DEFAULT` (schema.py:187-191). Identity-checked (`is None`/`is False`/`is True`, not truthy/falsy) in `test_v7_migration_leaves_pre_existing_rows_null_not_false_or_zero`, `test_all_three_fields_missing_normalize_to_none_not_fabricated`, `test_normalize_all_three_fields_missing_resolve_to_none_not_fabricated`. |
+| 4 | Existing `strava_unofficial` rows backfill via `renormalize_provider()` | ✅ PASS | `test_renormalize_backfills_elevation_moving_time_indoor_from_stored_raw_payload` passes — proves the backfill path end-to-end, not just `normalize()`'s output in isolation. |
+| 5 | Official-`strava` backfill constraint documented | ✅ PASS | `trainiq/normalization/renormalize.py` docstring (lines ~76-80) states rows synced before this fix lack the source fields in `raw_activities` entirely, so a fresh sync is required before re-normalization helps; documents the one-line future wrapper shape without building unused tooling now. Matches the architecture doc's stated constraint. |
+| 6 | Tests cover outdoor, indoor-trainer, all-missing, for both connectors | ✅ PASS | All 6 cases present and passing: `test_outdoor_ride_with_elevation_round_trips_through_raw_dict_and_normalize`, `test_indoor_trainer_ride_round_trips_through_raw_dict_and_normalize`, `test_all_three_fields_missing_normalize_to_none_not_fabricated` (strava.py); `test_normalize_outdoor_activity_maps_elevation_and_moving_time_is_not_indoor`, `test_normalize_indoor_trainer_ride_is_indoor_true`, `test_normalize_all_three_fields_missing_resolve_to_none_not_fabricated` (strava_unofficial.py). |
+| 7 | Full test suite passes | ✅ PASS | 518 passed, 2 pre-existing failures (missing BO-local fixture) reproduced identically on `main` — unrelated. |
 
-## Verdict
+## Additional checks performed (not just re-running the Developer's tests)
 
-All 7 acceptance criteria pass when the PR branch is evaluated on its own
-merge base. However, the PR is **not currently mergeable into `main`** and
-contains a real migration-version collision with already-merged work (PR
-#55 / issue #46), not a cosmetic conflict — sending back to the Developer to
-rebase onto current `main`, renumber the migration to `7`, resolve the
-`strava.py`/`test_strava_connector.py` conflicts (combining both issues'
-fields), and re-run the full suite before re-requesting QA.
+- Confirmed `moving_time_s` is sourced from a key distinct from `duration_s`
+  (`moving_time_raw` vs. `elapsed_time_raw`) by reading
+  `strava_unofficial.py` directly — guards against a copy-paste mapping bug.
+- Confirmed `sync/engine.py`'s `upsert_normalized_activity()` extends **both**
+  the `INSERT OR IGNORE` and `UPDATE` column lists/params (two independently
+  maintained SQL statements) — not just one.
+- Confirmed `confidence.py`'s `_ACTIVITY_OPTIONAL_FIELDS` was **not** touched,
+  per the architecture doc's explicit scope decision (avoids silently
+  changing `source_confidence` for unrelated activities).
+- Re-read the renumbered migration dict directly (not trusting the commit
+  message alone) to confirm no residual key collision with issue #46's
+  migration 6.
+
+## Result
+
+**All 7 acceptance criteria pass. The mergeability defect from the previous
+QA pass is confirmed fixed.** PR #56 is approved and ready to merge (BO's
+call, per pipeline protocol).
