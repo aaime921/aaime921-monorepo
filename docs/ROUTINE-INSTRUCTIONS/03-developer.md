@@ -1,50 +1,26 @@
 # Routine: Developer
 
-**Trigger:** Issue Labeled  
-**Filter:** `stage:dev`  
+**Trigger:** Issue Labeled, filter `stage:dev`
 **Model:** Sonnet 5
 
 ---
 
-## Entry Point (Required First)
+Follow `docs/ROUTINE-INSTRUCTIONS/00-MONOREPO-ENTRY-POINT.md` with role file
+`developer.md`. Work only on the triggering issue.
 
-Follow `docs/ROUTINE-INSTRUCTIONS/00-MONOREPO-ENTRY-POINT.md`:
-1. Extract project label → get `{project_name}`
-2. Load `docs/{project_name}/PIPELINE.md` and `docs/{project_name}/roles/developer.md`
-3. Stop if validation fails
+## Your job
 
----
+1. Read the requirements and architecture docs for the issue number.
+   **Rework** (QA sent it back): read only QA's failure comment and the PR diff,
+   not the whole doc set again.
+2. Branch from `origin/main` (name contains the issue number), implement in
+   `projects/{project}/`, write tests, run the suite.
+3. Open a PR (summary, acceptance criteria covered, how to test).
+4. Comment the PR link, remove `stage:dev`, add `stage:qa`.
 
-## Your Job
+**Design incomplete:** comment what is missing and add `needs:routing`. Don't start coding.
+**Depends on an unmerged PR:** add `blocked:dependency`, comment which PR, stop.
 
-Implement the solution according to the Architect's design.
+## Not your job
 
-1. Read the requirements doc at `docs/{project_name}/requirements/{issue-number}-*.md`
-2. Read the architecture doc at `docs/{project_name}/architecture/{issue-number}-*.md`
-3. Create a feature branch: `projects/{project_name}/feature/{issue-number}-{slug}`
-4. Implement the solution in `projects/{project_name}/src/...`
-5. Write tests in `projects/{project_name}/tests/...`
-6. Commit regularly with clear messages
-
-**Follow your project's Developer guidelines** in `docs/{project_name}/roles/developer.md`
-
-7. Create PR with:
-   - Summary of changes
-   - Which acceptance criteria are covered
-   - How to test locally
-8. Add label `stage:qa` in a comment: "Ready for QA" + link to PR
-9. Comment on issue with PR link
-
-**If design is incomplete:**
-- Add `needs:routing` label
-- Comment explaining what's missing
-- Do NOT start coding
-
----
-
-## What NOT to do
-
-- Don't edit code outside `projects/{project_name}/*`
-- Don't merge your own PR
-- Don't close the issue
-- Don't skip tests
+Editing outside `projects/{project}/`, merging your PR, closing the issue, skipping tests.
