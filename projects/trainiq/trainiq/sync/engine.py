@@ -163,15 +163,17 @@ def upsert_normalized_activity(conn: sqlite3.Connection, record: dict) -> str:
         INSERT OR IGNORE INTO normalized_activities
             (provider, external_id, start_time, duration_s, discipline, distance_m,
              avg_hr, max_hr, avg_power, max_power, calories,
+             elevation_gain_m, moving_time_s, is_indoor,
              training_load, training_load_method, source_confidence,
              activity_title, instructor_name, class_type, planned_duration_s,
              provider_class_id, sport_type_raw)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             record["provider"], record["external_id"], record["start_time"], record["duration_s"],
             record["discipline"], record["distance_m"], record["avg_hr"], record["max_hr"],
             record["avg_power"], record["max_power"], record["calories"],
+            record["elevation_gain_m"], record["moving_time_s"], record["is_indoor"],
             record["training_load"], record["training_load_method"], record["source_confidence"],
             record.get("activity_title"), record.get("instructor_name"), record.get("class_type"),
             record.get("planned_duration_s"), record.get("provider_class_id"), record.get("sport_type_raw"),
@@ -185,6 +187,7 @@ def upsert_normalized_activity(conn: sqlite3.Connection, record: dict) -> str:
         UPDATE normalized_activities SET
             start_time = ?, duration_s = ?, discipline = ?, distance_m = ?,
             avg_hr = ?, max_hr = ?, avg_power = ?, max_power = ?, calories = ?,
+            elevation_gain_m = ?, moving_time_s = ?, is_indoor = ?,
             training_load = ?, training_load_method = ?, source_confidence = ?,
             activity_title = COALESCE(?, activity_title),
             instructor_name = COALESCE(?, instructor_name),
@@ -197,7 +200,8 @@ def upsert_normalized_activity(conn: sqlite3.Connection, record: dict) -> str:
         (
             record["start_time"], record["duration_s"], record["discipline"], record["distance_m"],
             record["avg_hr"], record["max_hr"], record["avg_power"], record["max_power"],
-            record["calories"], record["training_load"], record["training_load_method"],
+            record["calories"], record["elevation_gain_m"], record["moving_time_s"], record["is_indoor"],
+            record["training_load"], record["training_load_method"],
             record["source_confidence"],
             record.get("activity_title"), record.get("instructor_name"), record.get("class_type"),
             record.get("planned_duration_s"), record.get("provider_class_id"), record.get("sport_type_raw"),

@@ -71,6 +71,18 @@ def renormalize_provider(
     today's exact behavior — confirmed by inspection that the one existing
     call site (scripts/renormalize_strava_unofficial.py, issue #36) passes
     no such argument.
+
+    Issue #48 note: this function is already fully generic (`provider` +
+    any `Connector`), so re-normalizing the official `strava` provider the
+    same way needs no new code here — just
+    `renormalize_provider(conn, "strava", StravaConnector(...))` via a thin
+    CLI wrapper mirroring scripts/renormalize_strava_unofficial.py. That
+    wrapper isn't written yet because official-`strava` rows synced before
+    issue #48 never had elevation_gain/moving_time/trainer captured into
+    raw_activities in the first place (`_activity_to_raw_dict()` didn't
+    read them) — re-normalization can't manufacture data that was never
+    persisted, so those rows need a fresh sync first. Write the wrapper
+    once that fresh sync has happened.
     """
     rows = conn.execute(
         "SELECT external_id, payload_json FROM raw_activities WHERE provider = ?",
