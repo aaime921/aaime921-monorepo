@@ -92,3 +92,142 @@ this issue's own new/changed suites in isolation:
 
 **All 7 acceptance criteria pass.** PR #59 is approved and ready to merge
 (BO's call, per pipeline protocol).
+
+---
+
+## Addendum: re-verification at `abde465` (2026-10-09, after merging #48/#58 into the branch)
+
+The BO merged `origin/main` into PR #59's branch to bring in #48 (v7) and
+#58 (v8), which lands at `abde465069004f4a4de1bac7df12346d3b5e1c71` and
+renumbers this issue's own migrations to **v9** (HR zones/effort points,
+was v7) and **v10** (`performance_fetch_status`, was v8). The BO asked QA
+to re-verify #47's ACs at this new head, and separately confirm #58's ACs
+(two-step `peloton_id`→`ride_id` lookup, caching, `--retry-failed`) still
+hold in the merged connector/backfill script — not re-litigate #58's own
+already-approved verification (`58-peloton-class-lookup-ride-id-resolution.md`),
+just confirm the merge didn't regress it.
+
+**Sandbox environment note:** this pass hit a sandbox-only dependency
+conflict (`pyo3_runtime.PanicException` from `cryptography`'s Rust
+bindings via `secretstorage`, triggered by every test using the
+`in_memory_keyring` autouse fixture) that is more severe than the
+`PYTHON_KEYRING_BACKEND` workaround noted in #58's own verification doc —
+without it, essentially the whole suite errors at fixture setup rather
+than running. Reproduced identically on `origin/main` (`f292ecf`, this
+PR's base) via a separate worktree before concluding it's unrelated to
+this PR's code. Worked around with
+`PYTHON_KEYRING_BACKEND=keyring.backends.null.Keyring` for every run
+below, which lets the suite actually execute instead of erroring out.
+
+### Test suite at `abde465`
+
+Checked out `issue-47-peloton-hr-zone-effort-points` at `abde465`
+(confirmed via `git log -1`, matches PR #59's reported head and
+`mergeable_state: clean`), `pip install -e ".[dev]"`, ran from
+`projects/trainiq/`:
+
+```
+PYTHON_KEYRING_BACKEND=keyring.backends.null.Keyring python3 -m pytest -q
+569 passed, 2 failed in 28.26s
+```
+
+The 2 failures are the same pre-existing, BO-local-CSV-fixture-dependent
+`test_peloton_csv_import.py` cases as every prior pass. Independently
+reproduced on `origin/main` at `f292ecf` (same workaround): **531 passed,
+2 failed** — identical failing tests, and the exact `FAILED`/`ERROR` node-id
+sets diff to show the only PR-branch-only entries are the ~38 new tests in
+`test_peloton_connector.py`/`test_backfill_peloton_workout_details.py`
+hitting the same pre-existing keyring/`secretstorage` setup error, not a
+new code defect. `tests/test_peloton_connector.py`,
+`tests/test_backfill_peloton_workout_details.py`, and
+`tests/test_sync_engine.py` in isolation: **156 passed, 0 failed.**
+
+### #47's 7 ACs — re-confirmed against the merged code (not just re-trusting the pre-merge pass)
+
+All 7 hold, verified by reading the actual merged files (not assuming the
+pre-merge verification still applies unchanged):
+
+- **AC1/AC2** — `_parse_performance_response()`/`normalize()` are
+  byte-for-byte the same logic as the pre-merge pass verified (slug-keyed
+  `metrics[]` lookup, `display_unit` guards, `effort_zones`-is-null → all
+  6 fields `None`). Fixture values in `test_peloton_connector.py` still use
+  the BO's real captured numbers (avg_hr=135, max_hr=163, max_power=294).
+- **AC3** — `grep -n "^def retry_with_backoff"` across the whole tree
+  still returns exactly one definition (`trainiq/sync/engine.py:311`).
+  `download()`'s `is_new_since_checkpoint` is still computed once per
+  workout and shared by both #46/#58's class-lookup branch and #47's
+  performance-fetch branch.
+- **AC4** — `scripts/backfill_peloton_workout_details.py` now also carries
+  #58's two-step session→ride resolution (ported from #58's branch during
+  the merge, not re-built) alongside #47's HR/power branch, each resolved
+  and committed independently per row (`_process_row()`, `conn.commit()`
+  after both concerns regardless of which ran).
+- **AC5** — `fetch_workout_performance()` unchanged: catches
+  `TransientError`/`PelotonHTTPError`, logs, returns `None`;
+  `AuthenticationError` still propagates. `download()` still sets
+  `_performance_fetch_status = PERFORMANCE_FETCH_STATUS_FAILED` and
+  continues the loop.
+- **AC6** — fixture tests from the real captured response still present
+  and passing (see test suite above).
+- **AC7** — 569 passed, only the 2 known pre-existing failures.
+
+### #58's ACs — confirmed still intact after the merge (not re-verifying from scratch)
+
+Read `download()`'s combined loop and `scripts/backfill_peloton_workout_details.py`
+directly in the merged file (not inferring from the pre-merge diff):
+
+- Two-step resolution (`fetch_class_session()` → `ride_id` →
+  `fetch_class_details()`, never calling the ride-details endpoint with a
+  raw `peloton_id`) is present unchanged in both `download()` and
+  `_process_class_metadata()`.
+- Both caches (`session_ride_id_cache`, `ride_details_cache`) are still
+  constructed once per `download()`/`run_backfill()` call, not per row —
+  confirmed by reading the actual call sites in the merged file.
+- `--retry-failed` still covers both `class_type == 'lookup_failed'` and
+  `performance_fetch_status == 'failed'` via one shared `_needs_attempt()`
+  helper and one CLI flag.
+- `difficulty_estimate` (added by #58) is still written by
+  `apply_class_metadata_update()` and included in the upsert's COALESCE
+  set.
+- `tests/test_peloton_connector.py`'s #58-specific cases
+  (`test_download_same_peloton_id_twice_resolves_session_once`,
+  `test_download_session_lookup_404_sets_lookup_failed_and_logs_without_fetching_ride_details`,
+  `test_regression_old_bug_session_id_used_directly_as_ride_id_404s`, etc.)
+  and `tests/test_backfill_peloton_workout_details.py`'s equivalents all
+  still pass against the merged file.
+
+### Merge-specific checks (beyond what either pre-merge doc covered)
+
+- **Schema renumbering, no collision:** `trainiq/storage/schema.py`:
+  `CURRENT_SCHEMA_VERSION = 10`; migration key `9` is HR zones/effort
+  points (was `7`), key `10` is `performance_fetch_status` (was `8`) —
+  matches the BO's renumbering note on the issue exactly, and `8` itself
+  (difficulty_estimate, #58) sits below both, not colliding.
+- **31-column upsert stays internally consistent:** counted
+  `upsert_normalized_activity()`'s `INSERT` column list, its `VALUES`
+  placeholder count, and the bound-params tuple — all 31, in the same
+  order, in both the `INSERT` and `UPDATE` branches; the `UPDATE` branch's
+  `COALESCE` set is exactly `{avg_hr, max_hr, max_power,
+  performance_fetch_status}` plus #46/#58's original 7-column COALESCE
+  group, with `hr_zone_1_s`…`hr_zone_5_s`/`effort_points` staying
+  unconditional-overwrite alongside the pre-existing unconditional
+  columns — not inverted, not miscounted. (A placeholder/param-count
+  mismatch here would surface immediately as a `sqlite3` binding error,
+  and the full suite's 569 passes rule that out, but the column-by-column
+  read confirms it's correct by design, not by accident.)
+- **No stale references anywhere:** `grep -rn` for
+  `backfill_peloton_class_metadata` (the pre-rename script name) across
+  `projects/trainiq/` returns only this script's own docstring explaining
+  the rename — no leftover imports, no duplicate file under the old name.
+  `grep -rn "hr_fetch_status\b"` (the architecture doc's original,
+  superseded column-name proposal) returns only explanatory comments, no
+  live code reference.
+- **Mergeability:** `pull_request_read` reports `mergeable_state: clean`
+  for PR #59 at this head against `main`.
+
+## Result (re-verification)
+
+**All 7 of #47's acceptance criteria still pass at `abde465`, and #58's
+acceptance criteria are confirmed intact in the merged connector/backfill
+script.** PR #59 remains approved and ready to merge (BO's call, per
+pipeline protocol).
