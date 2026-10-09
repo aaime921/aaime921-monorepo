@@ -192,6 +192,12 @@ class StravaConnector(Connector):
             "average_watts": activity.average_watts,
             "max_watts": activity.max_watts,
             "distance": float(activity.distance) if activity.distance is not None else None,
+            # Issue #46: for a Peloton-synced ride, Strava's own `name`
+            # already carries the class title and instructor (e.g. "45 min
+            # Power Zone Max Ride with Matt Wilpers") — previously read
+            # nowhere in this connector. Never fabricated: None when
+            # Strava itself reports no name.
+            "name": activity.name if activity.name else None,
         }
 
     # --- Feature 1.3 (scope-limited, see module docstring): raw extraction only ---
@@ -200,6 +206,7 @@ class StravaConnector(Connector):
         """Extracts Strava's raw fields into the RawActivity-shaped dict
         (Feature 0.7). Does NOT apply discipline taxonomy or compute
         TRIMP/TSS — deferred to Epic 6, per this module's docstring."""
+        discipline_raw = raw["sport_type"] or raw["type"]
         return {
             "provider": PROVIDER,
             "external_id": str(raw["id"]),
@@ -208,7 +215,7 @@ class StravaConnector(Connector):
             # Raw, pre-taxonomy-mapping vocabulary — sport_type is Strava's
             # newer, more granular field; fall back to the older `type` field
             # if a given activity somehow lacks it.
-            "discipline_raw": raw["sport_type"] or raw["type"],
+            "discipline_raw": discipline_raw,
             "avg_hr": int(raw["average_heartrate"]) if raw["average_heartrate"] is not None else None,
             "max_hr": raw["max_heartrate"],
             "avg_power": int(raw["average_watts"]) if raw["average_watts"] is not None else None,
@@ -218,4 +225,10 @@ class StravaConnector(Connector):
             # report this (see module docstring's KNOWN LIMITATION).
             "calories": None,
             "synced_at": datetime.now(timezone.utc).isoformat(),
+            # Issue #46 (AC3): raw `name` persisted independent of any
+            # Peloton link — the linked-pair precedence (AC4) is enforced
+            # entirely by the schema (these columns are NULL on every
+            # Peloton row's own counterpart query), not by anything here.
+            "activity_title": raw.get("name"),
+            "sport_type_raw": discipline_raw,
         }

@@ -321,6 +321,13 @@ class StravaUnofficialConnector(Connector):
             "distance_m": raw.get("distance_raw"),
             "calories": None,
             "synced_at": datetime.now(timezone.utc).isoformat(),
+            # Issue #46 (AC3): raw `name` and the same discipline_raw
+            # fallback chain (activity_type_display_name, else
+            # display_type), persisted under their own names. No
+            # download() change needed — `name` is already present in the
+            # stored web-endpoint payload.
+            "activity_title": raw.get("name"),
+            "sport_type_raw": raw.get("activity_type_display_name") or raw.get("display_type"),
         }
 
 

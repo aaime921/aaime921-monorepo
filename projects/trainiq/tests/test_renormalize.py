@@ -15,6 +15,8 @@ from pathlib import Path
 
 import pytest
 
+from trainiq.connectors.peloton import PelotonConnector
+from trainiq.connectors.peloton import PROVIDER as PELOTON_PROVIDER
 from trainiq.connectors.strava_unofficial import PROVIDER, StravaUnofficialConnector
 from trainiq.credentials.store import CredentialStore
 from trainiq.normalization.renormalize import renormalize_provider
@@ -202,3 +204,57 @@ def test_renormalize_unknown_provider_reads_zero_rows(db, connector):
     assert result.read == 0
     assert result.inserted == 0
     assert result.updated == 0
+
+
+# --- Issue #46: renormalize_provider() must never wipe backfilled class metadata ---
+
+def test_renormalize_peloton_never_wipes_already_backfilled_class_metadata(db):
+    """The specific regression the COALESCE-based upsert (sync/engine.py)
+    exists to prevent: a stored Peloton raw payload predating issue #46's
+    download() has no `_class_*` keys at all, so connector.normalize(raw)
+    returns None for all 5 new fields. Re-running renormalize_provider()
+    for an unrelated future reason (e.g. a taxonomy fix, like issue #36's
+    original strava_unofficial case) must NOT overwrite the class metadata
+    the backfill script already wrote for this row."""
+    raw_payload = {
+        "id": "w1", "start_time": 1790014244, "end_time": 1790014543,
+        "fitness_discipline": "cycling", "total_work": 23646.98, "distance": 1.2163,
+        "calories": 30.64,
+        # No _class_* keys — this row predates issue #46's download().
+    }
+    db.execute(
+        "INSERT INTO raw_activities (provider, external_id, payload_json, fetched_at) "
+        "VALUES (?, ?, ?, ?)",
+        (PELOTON_PROVIDER, "w1", json.dumps(raw_payload), "2026-09-01T00:00:00+00:00"),
+    )
+    db.execute(
+        """
+        INSERT INTO normalized_activities
+            (provider, external_id, start_time, duration_s, discipline, distance_m,
+             avg_hr, max_hr, avg_power, max_power, calories,
+             training_load, training_load_method, source_confidence,
+             activity_title, instructor_name, class_type, planned_duration_s, provider_class_id)
+        VALUES (?, 'w1', '2026-09-01T00:00:00+00:00', 299, 'cycling', 1216.3,
+                NULL, NULL, 79.1, NULL, 30.64, NULL, 'unknown', 0.5,
+                'Power Zone Max', 'Matt Wilpers', 'power_zone_max', 2700, 'ride-1')
+        """,
+        (PELOTON_PROVIDER,),
+    )
+    db.commit()
+
+    peloton_connector = PelotonConnector(CredentialStore(conn=db), session=object())
+    renormalize_provider(db, PELOTON_PROVIDER, peloton_connector)
+    db.commit()
+
+    row = dict(db.execute(
+        "SELECT * FROM normalized_activities WHERE provider = ? AND external_id = 'w1'",
+        (PELOTON_PROVIDER,),
+    ).fetchone())
+    assert row["activity_title"] == "Power Zone Max"
+    assert row["instructor_name"] == "Matt Wilpers"
+    assert row["class_type"] == "power_zone_max"
+    assert row["planned_duration_s"] == 2700
+    assert row["provider_class_id"] == "ride-1"
+    # discipline/distance_m DID get recomputed — proves this is a real
+    # re-normalization pass, not a no-op.
+    assert row["discipline"] == "cycling"

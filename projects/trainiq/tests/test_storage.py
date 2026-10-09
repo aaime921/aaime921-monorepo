@@ -223,8 +223,9 @@ def test_v2_to_v3_migration_preserves_existing_data(tmp_path):
 
     # Simulate "was already at v2" by manually rolling schema_version back
     # and undoing everything v3+ added, then re-migrating. weigh_ins must
-    # also be rolled back to its pre-v4 shape (ADR-039) — otherwise
-    # re-running the v4 migration script below would try to add columns
+    # also be rolled back to its pre-v4 shape (ADR-039), and
+    # normalized_activities to its pre-v5 shape (issue #46) — otherwise
+    # re-running those migration scripts below would try to add columns
     # that already exist.
     conn = sqlite3.connect(db_path)
     conn.execute("DROP TABLE athlete_profile")
@@ -239,6 +240,29 @@ def test_v2_to_v3_migration_preserves_existing_data(tmp_path):
             weight_kg REAL,
             body_fat_pct REAL,
             muscle_mass_pct REAL,
+            UNIQUE(provider, external_id)
+        )
+        """
+    )
+    conn.execute("DROP TABLE normalized_activities")
+    conn.execute(
+        """
+        CREATE TABLE normalized_activities (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            provider TEXT NOT NULL,
+            external_id TEXT NOT NULL,
+            start_time TEXT NOT NULL,
+            duration_s INTEGER NOT NULL,
+            discipline TEXT NOT NULL,
+            distance_m REAL,
+            avg_hr INTEGER,
+            max_hr INTEGER,
+            avg_power INTEGER,
+            max_power INTEGER,
+            calories INTEGER,
+            training_load REAL,
+            training_load_method TEXT,
+            source_confidence REAL NOT NULL,
             UNIQUE(provider, external_id)
         )
         """

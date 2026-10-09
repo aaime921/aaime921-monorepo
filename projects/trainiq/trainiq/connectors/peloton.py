@@ -69,6 +69,25 @@ Feature 3.5 (issue #7 — OAuth+PKCE auth path, a third option alongside the
   permission from Peloton), it falls back to the existing manual-recovery
   path in the same `authenticate()` call, per the module's Soft
   Degradation pattern. See `docs/architecture/7-peloton-pkce-oauth-refresh.md`.
+
+Feature 3.6 (issue #46 — class title/instructor/class type/planned length):
+  `download()` now also fetches and attaches per-class metadata for every
+  `workout_type == "class"` workout, via `fetch_class_details()`. This
+  rests on two facts that are NOT independently confirmed against this
+  project's own live evidence (the one real record on file,
+  `docs/trainiq/verification/peloton-2026-09-28.md`, shows neither a
+  `workout_type` nor a `peloton_id` field) — see the flagged constants
+  below (`WORKOUT_TYPE_FIELD` through `PLANNED_DURATION_FIELD`) and
+  `docs/trainiq/architecture/46-peloton-strava-class-metadata.md`'s Task 1,
+  a mandatory live-verification step requiring the BO's manually-supplied
+  bearer token against a real account — something this sandboxed routine
+  cannot run (no stored Peloton credentials, no network path to
+  api.onepeloton.com). Everything downstream of those flagged constants
+  (the schema, the skip-if-already-synced + COALESCE upsert safety, the
+  backfill tool, the tests' shapes) is unaffected by what that
+  verification eventually finds — only the constants themselves, and
+  `_is_class_workout()`'s fallback branch, would need to change. See
+  BACKLOG.md BL-011.
 """
 
 from __future__ import annotations
@@ -76,6 +95,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import secrets
+import sqlite3
 from datetime import datetime, timezone
 from typing import Any
 
@@ -140,6 +160,85 @@ _KNOWN_FITNESS_DISCIPLINES = {"cycling", "strength", "yoga", "running", "meditat
 # captured record (1.2163 km over 299s ≈ 14.6 km/h, a normal indoor-cycling
 # pace; nonsensical read as meters). `distance` is kilometers, not meters.
 DISTANCE_KM_TO_M_MULTIPLIER = 1000
+
+# Issue #46 — UNCONFIRMED. The one real record on file
+# (docs/trainiq/verification/peloton-2026-09-28.md) does not show either
+# field; this is the issue's own claim, not yet independently verified.
+# Task 1 of docs/trainiq/architecture/46-peloton-strava-class-metadata.md
+# is a mandatory, blocking live-verification step against the BO's real
+# account — this sandboxed routine cannot run it (no stored Peloton
+# credentials, no network path to api.onepeloton.com). If Task 1 finds
+# WORKOUT_TYPE_FIELD doesn't exist at all, _is_class_workout()'s fallback
+# branch (below) is what's actually exercised; Task 1 must then remove the
+# now-dead primary branch rather than leave both live indefinitely.
+WORKOUT_TYPE_FIELD = "workout_type"
+RIDE_ID_FIELD = "peloton_id"
+
+# Plain sentinel strings stored in the same free-text `class_type` column
+# a real Peloton category value would occupy — collision with a real
+# Peloton-assigned category is not a realistic concern (Peloton does not
+# control this column's vocabulary; this project does).
+CLASS_TYPE_NOT_A_CLASS = "not_a_class"      # AC2: just-ride/scenic/free mode
+CLASS_TYPE_LOOKUP_FAILED = "lookup_failed"  # AC2/AC7: class, but the detail fetch failed
+
+# Issue #46 — UNCONFIRMED, same Task 1 as above. Peloton's ride/class
+# detail response shape has never been captured in this repo. This
+# implements the per-ride-id details endpoint (plan (b) in the
+# architecture doc); RIDE_DETAIL_JOINS_PARAM documents the cheaper
+# joins-on-list alternative (plan (a)) Task 1 should try first — if it
+# works, fetch_class_details()/the ride_details_cache in download() below
+# can be removed entirely in favor of reading the joined fields directly
+# off each workout. That decision is deferred to Task 1, not made here.
+RIDE_DETAIL_JOINS_PARAM = {"joins": "ride,ride.instructor"}
+RIDE_DETAIL_ENDPOINT_TEMPLATE = "/api/ride/{ride_id}/details"
+
+CLASS_TITLE_FIELD = "title"
+INSTRUCTOR_OBJECT_FIELD = "instructor"  # UNCONFIRMED nesting — Task 1 may find instructor data sits elsewhere
+INSTRUCTOR_NAME_FIELD = "name"
+CLASS_TYPE_RAW_FIELD = "ride_type_id"   # or whatever Task 1 actually finds
+PLANNED_DURATION_FIELD = "duration"     # seconds
+
+
+def _is_class_workout(raw: dict[str, Any]) -> bool:
+    """raw[WORKOUT_TYPE_FIELD] == "class" today — the issue's own claim,
+    not yet independently confirmed (see WORKOUT_TYPE_FIELD above). Falls
+    back to "has a non-null RIDE_ID_FIELD" when WORKOUT_TYPE_FIELD is
+    absent from the raw record entirely, since some ride-id-shaped field
+    must exist for a per-workout details lookup to be callable at all."""
+    if WORKOUT_TYPE_FIELD in raw:
+        return raw.get(WORKOUT_TYPE_FIELD) == "class"
+    return raw.get(RIDE_ID_FIELD) is not None
+
+
+def _extract_instructor_name(details: dict[str, Any]) -> str | None:
+    instructor = details.get(INSTRUCTOR_OBJECT_FIELD)
+    if isinstance(instructor, dict):
+        return instructor.get(INSTRUCTOR_NAME_FIELD)
+    return None
+
+
+def apply_class_metadata_update(conn: sqlite3.Connection, external_id: str, fields: dict[str, Any]) -> None:
+    """Updates ONLY the 5 Peloton-enrichment columns on an existing
+    normalized_activities row. Does not call build_canonical_record() and
+    is not, and must not become, a parallel path for anything
+    discipline/confidence/training_load/start_time computes — this is
+    deliberately as narrow as ADR-039's bo_confirmed_valid/bo_confirmed_at
+    columns (schema.py's own comment already documents that precedent for
+    the same reason: a value some other process legitimately owns,
+    supplementary to the row's canonical identity). Caller commits; this
+    function does not. Used by scripts/backfill_peloton_class_metadata.py."""
+    conn.execute(
+        """
+        UPDATE normalized_activities
+        SET activity_title = ?, instructor_name = ?, class_type = ?,
+            planned_duration_s = ?, provider_class_id = ?
+        WHERE provider = 'peloton' AND external_id = ?
+        """,
+        (
+            fields.get("activity_title"), fields.get("instructor_name"), fields.get("class_type"),
+            fields.get("planned_duration_s"), fields.get("provider_class_id"), external_id,
+        ),
+    )
 
 
 class PelotonHTTPError(Exception):
@@ -392,7 +491,9 @@ class PelotonConnector(Connector):
 
     # --- Feature 3.3: Sync (REST only, per R-PELOTON-05) --------------------
 
-    def _authenticated_get(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+    def _authenticated_get(
+        self, path: str, params: dict[str, Any] | None = None, not_found_returns_none: bool = False
+    ) -> dict[str, Any] | None:
         try:
             response = self._session.get(
                 path,
@@ -409,10 +510,35 @@ class PelotonConnector(Connector):
             raise TransientError(f"{PROVIDER}: rate limited during download", retry_after_s=retry_after)
         if response.status_code >= 500:
             raise TransientError(f"{PROVIDER}: server error during download (status {response.status_code})")
+        # Issue #46: only fetch_class_details() opts into this — every
+        # other existing call site keeps today's exact behavior (a 404
+        # there raises PelotonHTTPError, unchanged).
+        if not_found_returns_none and response.status_code == 404:
+            return None
         if response.status_code != 200:
             raise PelotonHTTPError(f"{PROVIDER}: unexpected download status {response.status_code}")
 
         return response.json()
+
+    def fetch_class_details(self, ride_id: str) -> dict[str, Any] | None:
+        """Public (not `_`-prefixed): also called directly by
+        scripts/backfill_peloton_class_metadata.py, so the HTTP/retry/
+        error-shape logic exists in exactly one place. Returns None for a
+        confirmed "this class no longer exists" response (404) — logged by
+        the caller, never raised as PelotonHTTPError for that specific
+        case. Raises TransientError for 429/5xx (ADR-037, honors
+        Retry-After) and AuthenticationError for 401/403 — both let the
+        caller's existing retry/degradation handling apply unchanged, same
+        as every other authenticated_get call in this connector.
+
+        UNCONFIRMED endpoint/response shape — see the module-level comment
+        above WORKOUT_TYPE_FIELD and RIDE_DETAIL_ENDPOINT_TEMPLATE."""
+        if self._active_auth_header is None:
+            raise AuthenticationError(f"{PROVIDER}: fetch_class_details() called before a successful authenticate()")
+        return self._authenticated_get(
+            f"{self._base_url}{RIDE_DETAIL_ENDPOINT_TEMPLATE.format(ride_id=ride_id)}",
+            not_found_returns_none=True,
+        )
 
     def download(self, since: str | None = None) -> list[dict[str, Any]]:
         if self._active_auth_header is None:
@@ -420,10 +546,14 @@ class PelotonConnector(Connector):
 
         # `since` is required by the Connector interface but, per issue #5 /
         # docs/architecture/5-peloton-endpoint-field-mapping.md, is no
-        # longer forwarded: the live-verified evidence only documents this
-        # endpoint's *response* pagination fields, not any verified
-        # request-side filter param. Same full-history-walk-plus-dedup
-        # tradeoff already documented for Eufy (BL-006).
+        # longer forwarded as a request param: the live-verified evidence
+        # only documents this endpoint's *response* pagination fields, not
+        # any verified request-side filter param. Same full-history-walk-
+        # plus-dedup tradeoff already documented for Eufy (BL-006). Issue
+        # #46 gives `since` a second, independent use below: deciding
+        # whether a given class workout's detail fetch is worth attempting
+        # at all, so a live sync doesn't re-fetch ride details for the
+        # entire history on every run.
         me = self._authenticated_get(f"{self._base_url}/api/me")
         user_id = me["id"]
 
@@ -438,6 +568,41 @@ class PelotonConnector(Connector):
             if not body.get("show_next"):
                 break
             page += 1
+
+        # Issue #46: attach class metadata (title/instructor/class type/
+        # planned length) to each class workout dict, in place, before
+        # returning — connector-internal keys, same pattern as issue #45's
+        # _distance_unit. ride_details_cache is keyed by ride id for the
+        # duration of this one download() call, so a BO who retakes the
+        # same on-demand class twice only triggers one network call for it.
+        since_epoch = int(since) if since is not None else None
+        ride_details_cache: dict[Any, dict[str, Any] | None] = {}
+        for workout in workouts:
+            if not _is_class_workout(workout):
+                workout["_class_type"] = CLASS_TYPE_NOT_A_CLASS  # cheap, no network, every run
+                continue
+            start_time = workout.get("start_time")
+            is_new_since_checkpoint = since_epoch is None or (start_time is not None and start_time > since_epoch)
+            if not is_new_since_checkpoint:
+                # Deliberately leaves every _class_* key ABSENT — see
+                # normalize()'s handling and the COALESCE-based upsert in
+                # sync/engine.py. "Absent" here means "not attempted this
+                # run," which must stay distinguishable from "attempted
+                # and failed."
+                continue
+            ride_id = workout.get(RIDE_ID_FIELD)
+            if ride_id not in ride_details_cache:
+                ride_details_cache[ride_id] = self.fetch_class_details(ride_id)
+            details = ride_details_cache[ride_id]
+            if details is None:
+                workout["_class_type"] = CLASS_TYPE_LOOKUP_FAILED
+                diagnostic_logger().warning(f"{PROVIDER}: class lookup failed for ride_id={ride_id!r}")
+            else:
+                workout["_class_title"] = details.get(CLASS_TITLE_FIELD)
+                workout["_instructor_name"] = _extract_instructor_name(details)
+                workout["_class_type"] = details.get(CLASS_TYPE_RAW_FIELD)
+                workout["_planned_duration_s"] = details.get(PLANNED_DURATION_FIELD)
+                workout["_provider_class_id"] = ride_id
         return workouts
 
     # --- Feature 3.4 (extraction-only, see module docstring) --------------
@@ -490,6 +655,18 @@ class PelotonConnector(Connector):
             "distance_m": distance_m,
             "calories": raw.get("calories"),
             "synced_at": datetime.now(timezone.utc).isoformat(),
+            # Issue #46: read-only, never derived here — download() is the
+            # only place that decides these (network fetch, skip-if-
+            # already-synced, sentinels). raw.get(...) returns None in all
+            # three cases that must be treated identically by the upsert's
+            # COALESCE logic: this workout predates issue #46's download()
+            # entirely, it was skipped as older than the sync checkpoint,
+            # or (for the first four) a lookup simply wasn't attempted.
+            "activity_title": raw.get("_class_title"),
+            "instructor_name": raw.get("_instructor_name"),
+            "class_type": raw.get("_class_type"),
+            "planned_duration_s": raw.get("_planned_duration_s"),
+            "provider_class_id": raw.get("_provider_class_id"),
         }
 
     def extract_resume_cursor(self, normalized: dict[str, Any]) -> str | None:
