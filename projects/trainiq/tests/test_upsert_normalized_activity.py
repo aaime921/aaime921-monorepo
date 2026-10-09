@@ -345,6 +345,59 @@ def test_update_with_real_hr_and_power_values_overwrites(db):
     assert row["performance_fetch_status"] == "ok"
 
 
+# --- Issue #57: distance_m moves from unconditional-overwrite to COALESCE,
+# joining the AC2 group above — Peloton's distance_m is now resolved from
+# the SAME skip-gated performance-endpoint fetch as avg_hr/max_hr/
+# max_power, so it gains the identical "didn't attempt this pass" case
+# (see trainiq/connectors/peloton.py's Feature 3.10 docstring and
+# upsert_normalized_activity()'s own docstring). Unlike those three,
+# distance_m already has real history across Strava/Eufy — for those
+# providers normalize() never skip-gates it, so COALESCE is behaviorally
+# identical to today's overwrite whenever a real sync runs.
+
+def test_update_with_distance_m_none_preserves_existing_value(db):
+    """The COALESCE proof for issue #57: re-upserting with distance_m=None
+    (e.g. a Peloton workout skipped as already-synced this pass) must NOT
+    wipe an already-resolved distance — the exact regression the
+    architecture doc calls out explicitly as the reason this change is
+    necessary."""
+    first = _base_record(distance_m=21213.7)
+    upsert_normalized_activity(db, first)
+    db.commit()
+
+    second = _base_record(distance_m=None)
+    outcome = upsert_normalized_activity(db, second)
+    db.commit()
+
+    assert outcome == "updated"
+    row = dict(db.execute(
+        "SELECT * FROM normalized_activities WHERE provider = ? AND external_id = ?",
+        (second["provider"], second["external_id"]),
+    ).fetchone())
+    assert row["distance_m"] == pytest.approx(21213.7)
+    # avg_power is a DIFFERENT, pre-existing column (not part of this
+    # COALESCE group) — still overwrites unconditionally.
+    assert row["avg_power"] == 200
+
+
+def test_update_with_real_distance_m_overwrites(db):
+    """Proves COALESCE doesn't just always preserve — a real incoming
+    value still wins."""
+    first = _base_record(distance_m=1000.0)
+    upsert_normalized_activity(db, first)
+    db.commit()
+
+    second = _base_record(distance_m=21213.7)
+    upsert_normalized_activity(db, second)
+    db.commit()
+
+    row = dict(db.execute(
+        "SELECT * FROM normalized_activities WHERE provider = ? AND external_id = ?",
+        (second["provider"], second["external_id"]),
+    ).fetchone())
+    assert row["distance_m"] == pytest.approx(21213.7)
+
+
 def test_update_with_hr_fields_none_does_not_affect_unconditional_hr_zone_columns(db):
     """Proves the two groups don't share behavior in either direction,
     mirroring test_update_with_hr_zone_fields_none_does_not_affect_coalesced_class_metadata

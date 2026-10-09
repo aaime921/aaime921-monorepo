@@ -9,9 +9,14 @@ per-row mechanism:
     planned_duration_s/provider_class_id/difficulty_estimate, via issue #58's
     two-step resolution: PelotonConnector.fetch_class_session() (`peloton_id`
     is a class *session* id -> real `ride_id`), then fetch_class_details().
-  - avg/max HR + max power (issue #47, AC2/AC4): avg_hr/max_hr/max_power/
-    performance_fetch_status, via
-    PelotonConnector.fetch_workout_performance().
+  - avg/max HR + max power + distance (issue #47, AC2/AC4; issue #57 for
+    distance): avg_hr/max_hr/max_power/distance_m/performance_fetch_status,
+    all from the ONE PelotonConnector.fetch_workout_performance() call —
+    issue #57 extends this same per-row fetch with its own distance
+    extraction rather than adding a second network call or a second
+    status column (the 136 rows this fix targets never had this fetch
+    attempted at all, so one pass through this script resolves HR/power
+    and distance together).
 
 Renamed from scripts/backfill_peloton_class_metadata.py (issue #46's
 original name) as part of issue #47's implementation, per the BO's
@@ -27,7 +32,11 @@ canonical record from an already-stored raw payload with zero new network
 I/O." Both concerns here require a genuinely new network call per row,
 which renormalize_provider() has no hook for and should not grow one for
 — it would stop being a pure offline recomputation for every other caller
-too.
+too. This is also why issue #57 deletes scripts/renormalize_peloton_distance.py
+(issue #45) rather than keep it: that script's whole mechanism depended on
+a stored, zero-network-correctable unit, which no longer exists as a
+concept now that distance requires a live per-record fetch — see
+peloton.py's Feature 3.10 docstring.
 
 Instead, this script walks existing `normalized_activities` rows for
 provider="peloton" where EITHER concern is still missing/retryable
@@ -35,7 +44,7 @@ provider="peloton" where EITHER concern is still missing/retryable
 own `--retry-failed` extension), ordered by `id` for a stable walk. Each
 row's two concerns are resolved independently — a row missing only one of
 the two only does that one's network call — and written via
-`apply_class_metadata_update()` / `apply_hr_performance_update()`, the same
+`apply_class_metadata_update()` / `apply_performance_update()`, the same
 narrow UPDATE-only paths a live sync uses (see their docstrings in
 trainiq/connectors/peloton.py).
 
@@ -92,8 +101,10 @@ from trainiq.connectors.peloton import (
     PelotonConnector,
     _extract_ride_metadata,
     _is_class_workout,
+    _resolve_distance_m,
+    _resolve_distance_unit_token,
     apply_class_metadata_update,
-    apply_hr_performance_update,
+    apply_performance_update,
 )
 from trainiq.credentials.store import CredentialStore
 from trainiq.logging_setup import diagnostic_logger
@@ -199,11 +210,15 @@ def _process_performance(
     conn, connector: PelotonConnector, external_id: str, row: dict,
     retry_failed: bool, max_retries: int, sleep_fn,
 ) -> str | None:
-    """Resolves this row's avg/max HR + max power concern (issue #47,
-    AC2/AC4), independent of the class-metadata concern above — both read
-    from the already-stored raw payload only for their own fields
-    (RIDE_ID_FIELD vs. the workout's own external_id), and call their own
-    connector method. Returns "success"/"failed", or None if already
+    """Resolves this row's avg/max HR + max power + distance concern
+    (issue #47, AC2/AC4; issue #57 for distance), independent of the
+    class-metadata concern above — both read from the already-stored raw
+    payload only for their own fields (RIDE_ID_FIELD vs. the workout's own
+    external_id), and call their own connector method. distance_m is
+    derived from the SAME fetch_workout_performance() call as HR/power
+    (issue #57: no second network call, no second status column) via the
+    same _resolve_distance_unit_token()/_resolve_distance_m() helpers
+    download() uses. Returns "success"/"failed", or None if already
     resolved and not eligible for retry."""
     if not _needs_attempt(row["performance_fetch_status"], PERFORMANCE_FETCH_STATUS_FAILED, retry_failed):
         return None
@@ -217,18 +232,20 @@ def _process_performance(
     performance = connector.fetch_workout_performance(external_id)
 
     if performance is None:
-        apply_hr_performance_update(
+        apply_performance_update(
             conn, external_id, {"performance_fetch_status": PERFORMANCE_FETCH_STATUS_FAILED}
         )
         return "failed"
 
-    apply_hr_performance_update(
+    distance_unit = _resolve_distance_unit_token(performance.get("distance_unit_raw"))
+    apply_performance_update(
         conn,
         external_id,
         {
             "avg_hr": performance.get("avg_hr"),
             "max_hr": performance.get("max_hr"),
             "max_power": performance.get("max_power"),
+            "distance_m": _resolve_distance_m(performance.get("distance_value"), distance_unit),
             "performance_fetch_status": PERFORMANCE_FETCH_STATUS_OK,
         },
     )
