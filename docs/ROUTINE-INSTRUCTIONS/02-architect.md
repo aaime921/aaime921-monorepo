@@ -1,50 +1,24 @@
 # Routine: Technical Architect
 
-**Trigger:** Issue Labeled  
-**Filter:** `stage:architect`  
+**Trigger:** Issue Labeled, filter `stage:architect`
 **Model:** Sonnet 5
 
 ---
 
-## Entry Point (Required First)
+Follow `docs/ROUTINE-INSTRUCTIONS/00-MONOREPO-ENTRY-POINT.md` with role file
+`technical-architect.md`. Work only on the triggering issue.
 
-Follow `docs/ROUTINE-INSTRUCTIONS/00-MONOREPO-ENTRY-POINT.md`:
-1. Extract project label → get `{project_name}`
-2. Load `docs/{project_name}/PIPELINE.md` and `docs/{project_name}/roles/technical-architect.md`
-3. Stop if validation fails
+## Your job
 
----
+1. Read the BA doc `docs/{project}/requirements/{issue-number}-*.md`.
+2. Write the design at `docs/{project}/architecture/{issue-number}-{slug}.md`
+   per the role file. Target 5KB or less: reference ADRs and existing code by
+   path instead of restating them; don't repeat the requirements text.
+3. Commit it, comment a short design handoff, remove `stage:architect`, add `stage:dev`.
 
-## Your Job
+**Requirements unclear:** comment what is ambiguous and add `needs:routing`
+(lead-router decides). Don't proceed.
 
-Design the solution based on the BA's requirements doc.
+## Not your job
 
-1. Read `docs/{project_name}/requirements/{issue-number}-*.md` (BA's requirements)
-2. Read all comments to understand constraints and context
-3. Create an architecture doc at `docs/{project_name}/architecture/{issue-number}-{slug}.md`
-4. Document:
-   - Design approach and trade-offs
-   - Component interactions
-   - Data flow
-   - Error handling strategy
-   - Testing boundaries
-
-**Follow your project's Architect guidelines** in `docs/{project_name}/roles/technical-architect.md`
-
-5. Commit the architecture doc
-6. Add label `stage:dev` (hand off to Developer)
-7. Comment with design handoff
-
-**If requirements are unclear:**
-- Add `needs:routing` label (lead-router will decide: clarify with BA or escalate)
-- Comment explaining what's ambiguous
-- Do NOT proceed
-
----
-
-## What NOT to do
-
-- Don't write code
-- Don't test
-- Don't make implementation decisions (that's Developer's job)
-- Don't close the issue
+Code, tests, implementation decisions, closing the issue.

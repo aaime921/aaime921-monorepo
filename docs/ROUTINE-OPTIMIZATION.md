@@ -22,8 +22,28 @@
 | Date | Change | Routine | Impact | Commits |
 |------|--------|---------|--------|---------|
 | 2026-10-03 | Add single-stage validation (Rule 3) | All | HIGH | `14b0a88`, `fdafbb0` |
+| 2026-10-09 | Token cut (AND-6): event gate + triggering-issue-only in all instructions; PIPELINE.md 14.5KB to 3KB; CLAUDE.md 11KB to 3KB; role docs deduplicated into `CONVENTIONS.md`; lite routines and Triage retired from docs; code-review workflow limited to one run per non-docs PR | All | HIGH | see PR |
 
 ---
+
+## Pending UI changes (BO applies; routine settings are locked)
+
+Findings: issue #58 produced 8 `labeled` events, so the unfiltered BA fired about 8 times for 1 real job,
+and `developer-lite`/`qa-lite` fired on every `stage:dev`/`stage:qa` although no issue has a `complexity:*`
+label (no Triage routine exists). About 16 runs per issue vs about 5 needed, each paying roughly 10k tokens of startup context.
+
+1. **ba**: remove trigger "Issue: Opened"; keep "Issue: Labeled" and add filter `stage:ba`. Paste `01-ba.md`.
+2. **Delete `developer-lite` and `qa-lite`.** Decision: no complexity tiering. A Triage routine would add one
+   run (about 10k tokens) per issue to save model cost only on rare simple issues, and lite routines sharing the
+   `stage:dev` / `stage:qa` filter double-fire on every handoff. If tiering is wanted later, use distinct stage
+   labels (`stage:dev-lite`) set by BA/Architect so triggers filter exactly.
+3. **Models**: ba/architect/developer/qa/lead to Sonnet 5.5 (same price as Sonnet 5, newer); lead-router to Opus 5.5
+   ($4/$20 vs $5/$25 per M tokens). Only if available in the routine model picker.
+4. Paste the new `02`, `03`, `05`, `07`, `08` instruction files into their routines.
+5. Test (see `SETUP-GUIDE.md` smoke checks), then delete the "pending" sentence in `CLAUDE.md`.
+6. Optional: `~/.claude/CLAUDE.md` still lists 8 routines and the lite rows.
+
+Measure: compare runs per issue in the routines run history before and after; target is about 5.
 
 ## Potential Improvements (Monitoring List)
 
