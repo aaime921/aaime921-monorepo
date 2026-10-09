@@ -46,24 +46,24 @@ field it reads, `ACCOUNT_DISTANCE_UNIT_FIELD = "distance_unit"`, is the
 issue's own suggested value — the Architect flagged it explicitly as
 **unconfirmed**, since confirming it requires a live diagnostic against
 the BO's own account (same category as BL-008's endpoint-shape question).
-**Why still open:** that live diagnostic (architecture doc's Task 1:
-capture the **full** `/api/me` response body with the BO's manually-
-supplied bearer token — the only prior pass, 2026-09-28, recorded just
-`id` from that endpoint) requires live-account access this sandbox
-doesn't have. Per `docs/trainiq/roles/technical-architect.md`'s "Testing
-scope boundaries," live-account testing is BO responsibility, not Dev/QA
-— so the Developer routine implemented the rest of the fix (connector
-logic, one-off correction script, tests) against the flagged placeholder
-and left this item open rather than guessing a confirmation that didn't
-happen. See `docs/trainiq/verification/peloton-2026-09-28.md`'s
-2026-10-09 addendum.
-**What closes this:** whoever has the BO's manual bearer token runs the
-Task 1 diagnostic, confirms or corrects `ACCOUNT_DISTANCE_UNIT_FIELD` and
-`_DISTANCE_UNIT_ALIASES` in `trainiq/connectors/peloton.py`, and records
-the finding as a further dated addendum — same convention BL-008 used.
-Everything downstream of `_resolve_account_distance_unit()` is unaffected
-either way (by design — see the architecture doc's "Risks/tradeoffs").
-**Status:** Open.
+**Status:** Closed as **disproved** (2026-10-09, issue #57) — not merely
+"still unconfirmed." The BO's live, read-only capture of their own real
+`GET /api/me` response shows **no distance-unit field of any kind**
+(`height_unit: "metric"`, `weight_unit: "metric"`, `locale: "en-US"` are
+present; nothing else). Every one of the BO's 136 Peloton workouts had
+`distance_m = NULL` as a direct result — a full data-loss regression, not
+an edge case (issue #57's own evidence). `ACCOUNT_DISTANCE_UNIT_FIELD` and
+`_resolve_account_distance_unit()` are **removed** from
+`trainiq/connectors/peloton.py`, not merely left unused. Replaced by a
+per-workout, self-describing source: `GET
+/api/workout/{id}/performance_graph` → `summaries[slug="distance"]`
+(`value` + its own `display_unit`), which doesn't depend on any
+account-level setting at all — see
+`docs/trainiq/architecture/57-peloton-distance-performance-graph-source.md`
+and `docs/trainiq/verification/peloton-2026-09-28.md`'s 2026-10-09
+addendum. `_DISTANCE_UNIT_ALIASES`/`_DISTANCE_UNIT_MULTIPLIERS` are kept
+(generic unit tables, still needed to interpret the new per-record
+`display_unit` string).
 
 ### BL-011 — Peloton class/ride detail response shape (and `workout_type`/`peloton_id`'s own existence) is unverified against a live account
 **Raised:** Issue #46 implementation (class title/instructor/class

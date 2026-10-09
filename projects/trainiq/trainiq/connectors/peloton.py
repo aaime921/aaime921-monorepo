@@ -88,6 +88,28 @@ Feature 3.6 (issue #46 — class title/instructor/class type/planned length):
   verification eventually finds — only the constants themselves, and
   `_is_class_workout()`'s fallback branch, would need to change. See
   BACKLOG.md BL-011.
+
+Feature 3.7 (issue #57 — distance from `performance_graph`, replacing the
+  disproved `/api/me` account-unit source): issue #45's
+  `ACCOUNT_DISTANCE_UNIT_FIELD = "distance_unit"` read off `GET /api/me`
+  (BL-010) is DISPROVED, not merely unconfirmed — the BO's real `/api/me`
+  response has no distance-unit field of any kind. `distance_m` is now
+  derived per workout from `GET /api/workout/{id}/performance_graph`'s own
+  self-describing distance summary (`fetch_workout_performance()` /
+  `_parse_performance_response()`), gated only on the same
+  `is_new_since_checkpoint` condition issue #46 already computes per
+  workout in `download()`'s loop — unconditional across every discipline
+  (not just class workouts, not just workouts with a raw `distance`),
+  since issue #47 (not yet implemented) will extend the SAME fetch for
+  avg/max HR and max power and needs it attempted for every discipline
+  too. `performance_fetch_status` is one shared column for both concerns,
+  since they come from the one HTTP call. `distance_m`'s upsert semantics
+  moved from unconditional-overwrite to COALESCE (sync/engine.py) for the
+  same reason issue #46 already needed it for the 6 class-metadata
+  columns: a resync that skips an already-synced workout must not erase
+  an already-correct value. See
+  `docs/trainiq/architecture/57-peloton-distance-performance-graph-source.md`
+  and BACKLOG.md BL-010 (closed as disproved).
 """
 
 from __future__ import annotations
@@ -96,13 +118,14 @@ import base64
 import hashlib
 import secrets
 import sqlite3
+import time
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable
 
 from trainiq.connectors.base import CapabilityTier, Connector, ConnectorState
 from trainiq.credentials.store import CredentialStore
 from trainiq.logging_setup import diagnostic_logger
-from trainiq.sync.engine import AuthenticationError, TransientError
+from trainiq.sync.engine import AuthenticationError, TransientError, retry_with_backoff
 
 PROVIDER = "peloton"
 
@@ -156,32 +179,21 @@ _KNOWN_FITNESS_DISCIPLINES = {"cycling", "strength", "yoga", "running", "meditat
 # this replaced, DISTANCE_KM_TO_M_MULTIPLIER) came from the CSV importer's
 # own "Distance (km)" column and a plausibility check — not from the live
 # API. Live evidence (BO's real account + Peloton<->Strava pairs, issue #45)
-# proved the live API actually reports `distance` in the account's own
-# display-unit setting (miles for this BO), not always km. The unit must
-# therefore be read from the account, per workout-download, never assumed.
-
-# UNCONFIRMED — issue #45's own suggestion, not yet live-verified against a
-# real /api/me response body beyond its `id` field (the only field
-# docs/verification/peloton-2026-09-28.md actually captured). Task 1 of
-# docs/architecture/45-peloton-distance-unit-conversion.md calls for a
-# live diagnostic (same disposable-script pattern as
-# scripts/debug_peloton_manual_bearer.py from issue #5) against the real
-# account's /api/me response, using the BO's manually-supplied bearer
-# token, to confirm or correct this field name and the alias table below
-# — this is live-account verification (Live-account testing is BO
-# responsibility, not Dev/QA, per docs/roles/technical-architect.md
-# "Testing scope boundaries"), so it could not be run from this sandbox,
-# which has no stored Peloton credentials and no network path to
-# api.onepeloton.com. Everything downstream of
-# _resolve_account_distance_unit() is unaffected by what that
-# verification finds — only this constant and the alias table below would
-# need to change. See docs/trainiq/verification/peloton-2026-09-28.md and
-# BACKLOG.md BL-010.
-ACCOUNT_DISTANCE_UNIT_FIELD = "distance_unit"
+# proved the live API actually reports `distance` in some unit, not always
+# km — but issue #45's own replacement (an account-level unit read off
+# `GET /api/me`) is itself now DISPROVED by issue #57: the BO's real
+# `/api/me` response has no distance-unit field of any kind
+# (`height_unit`/`weight_unit`/`locale` are present, nothing else). See
+# BACKLOG.md BL-010 ("Closed as disproved") and
+# docs/trainiq/architecture/57-peloton-distance-performance-graph-source.md.
+# `ACCOUNT_DISTANCE_UNIT_FIELD`/`_resolve_account_distance_unit()` are
+# removed, not merely unused — distance is now resolved per workout from
+# `performance_graph`'s own self-describing `display_unit` (below), never
+# from any account-level setting.
 
 # Recognized spellings/synonyms for the two units this project supports
 # today. Extend this table (not the lookup logic in
-# _resolve_account_distance_unit()) if live verification finds Peloton
+# _resolve_distance_unit_token()) if live verification finds Peloton
 # reports a different token set (e.g. "imperial"/"metric" instead of
 # "mi"/"km").
 _DISTANCE_UNIT_ALIASES: dict[str, str] = {
@@ -196,18 +208,75 @@ _DISTANCE_UNIT_MULTIPLIERS: dict[str, float] = {
 }
 
 
-def _resolve_account_distance_unit(me: dict[str, Any]) -> str | None:
-    """Reads ACCOUNT_DISTANCE_UNIT_FIELD off a /api/me response body and
-    maps it through _DISTANCE_UNIT_ALIASES to a canonical "mi"/"km" token.
-    Returns None for a missing field or an unrecognized value — never
-    guesses, never raises. Pure function of its argument; does no logging
-    itself (normalize() owns logging a missing/unknown unit, so it's
-    reported exactly once per affected workout, not once per sync run plus
-    once per workout)."""
-    raw_unit = me.get(ACCOUNT_DISTANCE_UNIT_FIELD)
+def _resolve_distance_unit_token(raw_unit: Any) -> str | None:
+    """Maps a performance_graph `display_unit` value through
+    _DISTANCE_UNIT_ALIASES to a canonical "mi"/"km" token. Returns None
+    for a missing/non-string/unrecognized value — never guesses, never
+    raises. Pure function of its argument; does no logging itself
+    (normalize() owns logging a missing/unknown unit, so it's reported
+    exactly once per affected workout, not once per sync run plus once per
+    workout). Replaces issue #45's _resolve_account_distance_unit() (see
+    above) — same alias table, now applied to a per-record value instead
+    of an account-level /api/me field."""
     if not isinstance(raw_unit, str):
         return None
     return _DISTANCE_UNIT_ALIASES.get(raw_unit.strip().lower())
+
+
+# Issue #57: CONFIRMED, live-evidenced (BO's real account, 2026-10-09) —
+# GET this path returns a body with a top-level "summaries" list; the
+# entry with slug == "distance" carries "value" (float) and its own
+# "display_unit" (e.g. "km") for that workout, self-describing and
+# independent of any account-level setting. No query params documented in
+# the issue's own capture — PERFORMANCE_ENDPOINT_PARAMS reflects that, not
+# a guess. #47 (HR/power, not yet implemented) extends
+# _parse_performance_response()'s returned dict with the same fetch rather
+# than calling this endpoint a second time.
+PERFORMANCE_ENDPOINT_TEMPLATE = "/api/workout/{workout_id}/performance_graph"
+PERFORMANCE_ENDPOINT_PARAMS: dict[str, Any] = {}
+
+SUMMARIES_FIELD = "summaries"
+SUMMARY_SLUG_FIELD = "slug"
+SUMMARY_VALUE_FIELD = "value"
+SUMMARY_DISPLAY_UNIT_FIELD = "display_unit"
+DISTANCE_SUMMARY_SLUG = "distance"
+
+# "Attempted this pass" outcome, shared by distance (this issue) and
+# HR/power (#47, not yet implemented) since both are extracted from the
+# one fetch_workout_performance() call. Absent (column default, NULL):
+# never attempted this pass — COALESCE in upsert_normalized_activity()
+# preserves whatever was already stored, same convention as #46's absent
+# _class_* keys.
+PERFORMANCE_FETCH_STATUS_OK = "ok"          # attempted, response parsed
+                                             # (individual fields may still
+                                             # be None/absent)
+PERFORMANCE_FETCH_STATUS_FAILED = "failed"  # attempted, fetch itself failed
+
+
+def _parse_performance_response(body: dict[str, Any]) -> dict[str, Any]:
+    """Issue #57: extracts the distance summary from a performance_graph
+    response body. Returns {"distance_value": float | None,
+    "distance_unit_raw": str | None} — both None if `body` has no
+    "summaries" list, or no entry with slug == DISTANCE_SUMMARY_SLUG.
+    Never raises, even on a malformed/non-dict entry in `summaries`.
+
+    Issue #47 (not yet implemented) extends this SAME function's returned
+    dict with "avg_hr"/"max_hr"/"max_power" read from the same
+    already-parsed `body` — same endpoint, same fetch, one response. Do
+    not add a second call to PERFORMANCE_ENDPOINT_TEMPLATE for that;
+    extend this dict instead."""
+    summaries = body.get(SUMMARIES_FIELD)
+    distance_value: float | None = None
+    distance_unit_raw: str | None = None
+    if isinstance(summaries, list):
+        for entry in summaries:
+            if not isinstance(entry, dict):
+                continue
+            if entry.get(SUMMARY_SLUG_FIELD) == DISTANCE_SUMMARY_SLUG:
+                distance_value = entry.get(SUMMARY_VALUE_FIELD)
+                distance_unit_raw = entry.get(SUMMARY_DISPLAY_UNIT_FIELD)
+                break
+    return {"distance_value": distance_value, "distance_unit_raw": distance_unit_raw}
 
 # Issue #46 — UNCONFIRMED. The one real record on file
 # (docs/trainiq/verification/peloton-2026-09-28.md) does not show either
@@ -274,7 +343,7 @@ def apply_class_metadata_update(conn: sqlite3.Connection, external_id: str, fiel
     columns (schema.py's own comment already documents that precedent for
     the same reason: a value some other process legitimately owns,
     supplementary to the row's canonical identity). Caller commits; this
-    function does not. Used by scripts/backfill_peloton_class_metadata.py."""
+    function does not. Used by scripts/backfill_peloton_workout_details.py."""
     conn.execute(
         """
         UPDATE normalized_activities
@@ -286,6 +355,22 @@ def apply_class_metadata_update(conn: sqlite3.Connection, external_id: str, fiel
             fields.get("activity_title"), fields.get("instructor_name"), fields.get("class_type"),
             fields.get("planned_duration_s"), fields.get("provider_class_id"), external_id,
         ),
+    )
+
+
+def apply_distance_update(conn: sqlite3.Connection, external_id: str, fields: dict[str, Any]) -> None:
+    """Updates ONLY distance_m and performance_fetch_status on an existing
+    normalized_activities row. Same narrow single-writer exception as
+    apply_class_metadata_update() — see that function's docstring for why.
+    Caller commits; this function does not. Used by
+    scripts/backfill_peloton_workout_details.py."""
+    conn.execute(
+        """
+        UPDATE normalized_activities
+        SET distance_m = ?, performance_fetch_status = ?
+        WHERE provider = 'peloton' AND external_id = ?
+        """,
+        (fields.get("distance_m"), fields.get("performance_fetch_status"), external_id),
     )
 
 
@@ -322,6 +407,7 @@ class PelotonConnector(Connector):
         credential_store: CredentialStore,
         session: Any = None,
         base_url: str = DEFAULT_BASE_URL,
+        sleep_fn: Callable[[float], None] = time.sleep,
     ):
         super().__init__(PROVIDER)
         self._credentials = credential_store
@@ -330,6 +416,11 @@ class PelotonConnector(Connector):
         # api.onepeloton.com, so every test substitutes a fake session.
         self._session = session if session is not None else _RequestsSession()
         self._active_auth_header: dict[str, str] | None = None
+        # Issue #57: fetch_workout_performance() retries internally (unlike
+        # fetch_class_details(), which relies on the Synchronization
+        # Engine's own outer retry) — injectable so tests simulating
+        # exhausted retries don't actually sleep real backoff delays.
+        self._sleep_fn = sleep_fn
 
     # --- Feature 3.1: Authentication (dual-path) --------------------------
 
@@ -570,7 +661,7 @@ class PelotonConnector(Connector):
 
     def fetch_class_details(self, ride_id: str) -> dict[str, Any] | None:
         """Public (not `_`-prefixed): also called directly by
-        scripts/backfill_peloton_class_metadata.py, so the HTTP/retry/
+        scripts/backfill_peloton_workout_details.py, so the HTTP/retry/
         error-shape logic exists in exactly one place. Returns None for a
         confirmed "this class no longer exists" response (404) — logged by
         the caller, never raised as PelotonHTTPError for that specific
@@ -588,6 +679,37 @@ class PelotonConnector(Connector):
             not_found_returns_none=True,
         )
 
+    def fetch_workout_performance(self, workout_id: str) -> dict[str, Any] | None:
+        """Public (not `_`-prefixed) — also called directly by
+        scripts/backfill_peloton_workout_details.py, so the HTTP/retry/
+        parsing logic exists in exactly one place. Wraps its own call in
+        retry_with_backoff() and degrades ANY non-auth failure
+        (TransientError after retries exhausted, PelotonHTTPError,
+        including a 404) to None, logged once — AC3 requires a per-workout
+        distance-resolution failure to never abort the whole sync. This
+        deliberately differs from fetch_class_details(), which lets
+        TransientError propagate to the Synchronization Engine's own outer
+        retry — distance/HR data is supplementary enrichment, a class
+        lookup failure is not. AuthenticationError still propagates
+        unchanged (connector-wide concern, ADR-009)."""
+        if self._active_auth_header is None:
+            raise AuthenticationError(f"{PROVIDER}: fetch_workout_performance() called before a successful authenticate()")
+        try:
+            body = retry_with_backoff(
+                lambda: self._authenticated_get(
+                    f"{self._base_url}{PERFORMANCE_ENDPOINT_TEMPLATE.format(workout_id=workout_id)}",
+                    params=PERFORMANCE_ENDPOINT_PARAMS,
+                ),
+                PROVIDER,
+                sleep_fn=self._sleep_fn,
+            )
+        except (TransientError, PelotonHTTPError) as exc:
+            diagnostic_logger().warning(
+                f"{PROVIDER}: performance fetch failed for workout_id={workout_id!r}: {exc}"
+            )
+            return None
+        return _parse_performance_response(body)
+
     def download(self, since: str | None = None) -> list[dict[str, Any]]:
         if self._active_auth_header is None:
             raise AuthenticationError(f"{PROVIDER}: download() called before a successful authenticate()")
@@ -599,17 +721,11 @@ class PelotonConnector(Connector):
         # any verified request-side filter param. Same full-history-walk-
         # plus-dedup tradeoff already documented for Eufy (BL-006). Issue
         # #46 gives `since` a second, independent use below: deciding
-        # whether a given class workout's detail fetch is worth attempting
-        # at all, so a live sync doesn't re-fetch ride details for the
+        # whether a given workout's per-workout detail fetch(es) are worth
+        # attempting at all, so a live sync doesn't re-fetch them for the
         # entire history on every run.
         me = self._authenticated_get(f"{self._base_url}/api/me")
         user_id = me["id"]
-        # Issue #45: resolved once per download() call (not per workout) —
-        # this is an account-level setting, not a per-workout field (see
-        # architecture doc's "Why account-level, not per-workout"). Attached
-        # to every workout dict below so normalize() stays a pure function
-        # of its one argument and never itself calls /api/me.
-        distance_unit = _resolve_account_distance_unit(me)
 
         workouts: list[dict[str, Any]] = []
         page = 0
@@ -618,50 +734,63 @@ class PelotonConnector(Connector):
                 f"{self._base_url}/api/user/{user_id}/workouts",
                 params={"page": page},
             )
-            for workout in body.get("data", []):
-                # Always set, even when None — never omitted — so
-                # normalize() can use .get() without needing to distinguish
-                # "key absent" from "key present but None".
-                workout["_distance_unit"] = distance_unit
-                workouts.append(workout)
+            workouts.extend(body.get("data", []))
             if not body.get("show_next"):
                 break
             page += 1
 
         # Issue #46: attach class metadata (title/instructor/class type/
         # planned length) to each class workout dict, in place, before
-        # returning — connector-internal keys, same pattern as issue #45's
-        # _distance_unit. ride_details_cache is keyed by ride id for the
-        # duration of this one download() call, so a BO who retakes the
-        # same on-demand class twice only triggers one network call for it.
+        # returning — connector-internal keys. ride_details_cache is keyed
+        # by ride id for the duration of this one download() call, so a BO
+        # who retakes the same on-demand class twice only triggers one
+        # network call for it.
+        #
+        # Issue #57: distance is resolved the same way, from the same
+        # checkpoint-gated per-workout performance_graph fetch
+        # (fetch_workout_performance()) — unconditional per
+        # is_new_since_checkpoint workout, NOT gated on whether the workout
+        # is a class or has a raw `distance` value (a strength class has no
+        # distance but can have real HR data for #47's own future use of
+        # this same fetch). "Absent" for every _class_*/_distance_*/
+        # _performance_fetch_status key below means "not attempted this
+        # run," which must stay distinguishable from "attempted and
+        # failed" — both normalize() and the COALESCE-based upsert in
+        # sync/engine.py depend on that distinction.
         since_epoch = int(since) if since is not None else None
         ride_details_cache: dict[Any, dict[str, Any] | None] = {}
         for workout in workouts:
-            if not _is_class_workout(workout):
-                workout["_class_type"] = CLASS_TYPE_NOT_A_CLASS  # cheap, no network, every run
-                continue
             start_time = workout.get("start_time")
             is_new_since_checkpoint = since_epoch is None or (start_time is not None and start_time > since_epoch)
-            if not is_new_since_checkpoint:
-                # Deliberately leaves every _class_* key ABSENT — see
-                # normalize()'s handling and the COALESCE-based upsert in
-                # sync/engine.py. "Absent" here means "not attempted this
-                # run," which must stay distinguishable from "attempted
-                # and failed."
-                continue
-            ride_id = workout.get(RIDE_ID_FIELD)
-            if ride_id not in ride_details_cache:
-                ride_details_cache[ride_id] = self.fetch_class_details(ride_id)
-            details = ride_details_cache[ride_id]
-            if details is None:
-                workout["_class_type"] = CLASS_TYPE_LOOKUP_FAILED
-                diagnostic_logger().warning(f"{PROVIDER}: class lookup failed for ride_id={ride_id!r}")
-            else:
-                workout["_class_title"] = details.get(CLASS_TITLE_FIELD)
-                workout["_instructor_name"] = _extract_instructor_name(details)
-                workout["_class_type"] = details.get(CLASS_TYPE_RAW_FIELD)
-                workout["_planned_duration_s"] = details.get(PLANNED_DURATION_FIELD)
-                workout["_provider_class_id"] = ride_id
+
+            if not _is_class_workout(workout):
+                workout["_class_type"] = CLASS_TYPE_NOT_A_CLASS  # cheap, no network, every run
+            elif is_new_since_checkpoint:
+                ride_id = workout.get(RIDE_ID_FIELD)
+                if ride_id not in ride_details_cache:
+                    ride_details_cache[ride_id] = self.fetch_class_details(ride_id)
+                details = ride_details_cache[ride_id]
+                if details is None:
+                    workout["_class_type"] = CLASS_TYPE_LOOKUP_FAILED
+                    diagnostic_logger().warning(f"{PROVIDER}: class lookup failed for ride_id={ride_id!r}")
+                else:
+                    workout["_class_title"] = details.get(CLASS_TITLE_FIELD)
+                    workout["_instructor_name"] = _extract_instructor_name(details)
+                    workout["_class_type"] = details.get(CLASS_TYPE_RAW_FIELD)
+                    workout["_planned_duration_s"] = details.get(PLANNED_DURATION_FIELD)
+                    workout["_provider_class_id"] = ride_id
+            # else: not new since checkpoint — every _class_* key stays ABSENT.
+
+            if is_new_since_checkpoint:
+                performance = self.fetch_workout_performance(workout.get("id"))
+                if performance is None:
+                    workout["_performance_fetch_status"] = PERFORMANCE_FETCH_STATUS_FAILED
+                else:
+                    workout["_performance_fetch_status"] = PERFORMANCE_FETCH_STATUS_OK
+                    workout["_distance_value"] = performance.get("distance_value")
+                    workout["_distance_unit"] = _resolve_distance_unit_token(performance.get("distance_unit_raw"))
+            # else: not new since checkpoint — _performance_fetch_status/
+            # _distance_* keys stay ABSENT (see docstring block above).
         return workouts
 
     # --- Feature 3.4 (extraction-only, see module docstring) --------------
@@ -684,24 +813,36 @@ class PelotonConnector(Connector):
         total_work = raw.get("total_work")
         avg_power = total_work / duration_s if total_work is not None and duration_s else None
 
-        # Issue #45: distance_m depends on the account's own distance unit
-        # (attached to `raw` by download(), see _distance_unit above) — never
-        # a hard-coded unit. A workout with no distance at all (e.g.
-        # meditation) is not a unit problem, so it's not warned about; only
-        # a real distance value with an unresolved unit is.
+        # Issue #57: distance_m is now derived from the per-workout
+        # performance_graph fetch (attached to `raw` by download() as
+        # _distance_value/_distance_unit/_performance_fetch_status), never
+        # from any account-level setting (issue #45's ACCOUNT_DISTANCE_UNIT_FIELD
+        # is disproved/removed — see BACKLOG.md BL-010). A workout with no
+        # `distance` at all (e.g. meditation) is not a fetch/unit problem,
+        # so it's never warned about.
         raw_distance = raw.get("distance")
-        unit_token = raw.get("_distance_unit")
-        multiplier = _DISTANCE_UNIT_MULTIPLIERS.get(unit_token)
-        if raw_distance is not None and multiplier is None:
-            diagnostic_logger().warning(
-                f"{PROVIDER}: unresolved distance unit {unit_token!r} "
-                f"(external_id={raw.get('id')}) — distance_m stored as NULL, not guessed"
-            )
+        if raw_distance is None:
             distance_m = None
-        elif raw_distance is not None:
-            distance_m = raw_distance * multiplier
+        elif raw.get("_performance_fetch_status") != PERFORMANCE_FETCH_STATUS_OK:
+            # Either not attempted this pass (key absent — checkpoint-
+            # gated, silent, same convention as #46's absent _class_*), or
+            # the fetch itself failed (fetch_workout_performance() already
+            # logged that failure once, at fetch time — do not log it
+            # again here).
+            distance_m = None
         else:
-            distance_m = None
+            distance_value = raw.get("_distance_value")
+            unit_token = raw.get("_distance_unit")
+            multiplier = _DISTANCE_UNIT_MULTIPLIERS.get(unit_token)
+            if distance_value is not None and multiplier is not None:
+                distance_m = distance_value * multiplier
+            else:
+                diagnostic_logger().warning(
+                    f"{PROVIDER}: performance fetch succeeded but yielded no usable "
+                    f"distance summary (external_id={raw.get('id')!r}) — distance_m "
+                    f"stored as NULL, not guessed"
+                )
+                distance_m = None
 
         return {
             "provider": PROVIDER,
@@ -742,6 +883,11 @@ class PelotonConnector(Connector):
             "class_type": raw.get("_class_type"),
             "planned_duration_s": raw.get("_planned_duration_s"),
             "provider_class_id": raw.get("_provider_class_id"),
+            # Issue #57: shared between distance (this issue) and HR/power
+            # (#47, not yet implemented) — both come from the one
+            # fetch_workout_performance() call, so one status column
+            # suffices (see peloton.py's PERFORMANCE_FETCH_STATUS_OK docstring).
+            "performance_fetch_status": raw.get("_performance_fetch_status"),
         }
 
     def extract_resume_cursor(self, normalized: dict[str, Any]) -> str | None:

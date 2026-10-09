@@ -79,6 +79,11 @@ def _build_activity_record(
         "planned_duration_s": normalized.get("planned_duration_s"),
         "provider_class_id": normalized.get("provider_class_id"),
         "sport_type_raw": normalized.get("sport_type_raw"),
+        # Issue #57: passed through verbatim, same no-interpretation
+        # treatment as the fields above — absence (None) is meaningful
+        # (see peloton.py's normalize()) and must reach
+        # upsert_normalized_activity()'s COALESCE logic unchanged.
+        "performance_fetch_status": normalized.get("performance_fetch_status"),
     }
 
 

@@ -25,7 +25,7 @@ from pathlib import Path
 
 from trainiq.storage.backfill import backfill_weigh_in_plausibility, decouple_weigh_in_plausibility
 
-CURRENT_SCHEMA_VERSION = 6
+CURRENT_SCHEMA_VERSION = 7
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -177,6 +177,19 @@ _MIGRATIONS: dict[int, str] = {
         ALTER TABLE normalized_activities ADD COLUMN planned_duration_s INTEGER;
         ALTER TABLE normalized_activities ADD COLUMN provider_class_id TEXT;
         ALTER TABLE normalized_activities ADD COLUMN sport_type_raw TEXT;
+    """,
+    # Issue #57: tracks whether PelotonConnector's per-workout
+    # performance_graph fetch was attempted this sync pass, and if so,
+    # whether it succeeded — shared by distance (this issue) and HR/power
+    # (#47, not yet implemented), since both come from the same one HTTP
+    # call. NULL (column default) means "never attempted" — the same
+    # not-attempted-this-pass convention issue #46's absent _class_* keys
+    # already use, and what upsert_normalized_activity()'s COALESCE
+    # depends on to avoid wiping an already-correct distance_m on a
+    # resync that skips an already-synced workout. See
+    # docs/trainiq/architecture/57-peloton-distance-performance-graph-source.md.
+    7: """
+        ALTER TABLE normalized_activities ADD COLUMN performance_fetch_status TEXT;
     """,
 }
 
