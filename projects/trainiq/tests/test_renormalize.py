@@ -79,7 +79,7 @@ def _raw_payload(external_id: int, display_type: str, activity_type_display_name
         "moving_time_raw": 1800,
         "elapsed_time_raw": 1900,
         "elevation_gain_raw": 50.0,
-        "start_date_local_raw": int(datetime(2026, 1, 5, 7, 0, 0, tzinfo=timezone.utc).timestamp()),
+        "start_time": "2026-01-05T07:00:00+0000",
         "commute": False,
         "private": False,
         "has_latlng": True,
@@ -206,6 +206,64 @@ def test_renormalize_unknown_provider_reads_zero_rows(db, connector):
     assert result.read == 0
     assert result.inserted == 0
     assert result.updated == 0
+
+
+def test_renormalize_corrects_bst_shifted_start_time(db, connector):
+    """AC4 (issue #43): a row stored under the old bug — start_time
+    shifted +1h because start_date_local_raw was read as UTC — is
+    corrected to the real UTC instant once re-normalized against the
+    unchanged raw payload (which already carries the correct start_time
+    field), without touching raw_activities."""
+    correct_utc = datetime(2026, 10, 7, 18, 57, 34, tzinfo=timezone.utc)
+    wrong_stored = datetime(2026, 10, 7, 19, 57, 34, tzinfo=timezone.utc)  # old bug's +1h
+    payload = {
+        "id": 99,
+        "name": "Evening Ride",
+        "display_type": "Ride",
+        "activity_type_display_name": "Ride",
+        "distance_raw": 20000.0,
+        "moving_time_raw": 2800,
+        "elapsed_time_raw": 2900,
+        "elevation_gain_raw": 80.0,
+        "start_time": correct_utc.strftime("%Y-%m-%dT%H:%M:%S+0000"),
+        "start_date_local_raw": int(wrong_stored.timestamp()),
+        "commute": False,
+        "private": False,
+        "has_latlng": True,
+        "description": "",
+    }
+    payload_json = json.dumps(payload)
+    db.execute(
+        "INSERT INTO raw_activities (provider, external_id, payload_json, fetched_at) "
+        "VALUES (?, ?, ?, ?)",
+        (PROVIDER, "99", payload_json, "2026-10-07T20:00:00+00:00"),
+    )
+    db.execute(
+        """
+        INSERT INTO normalized_activities
+            (provider, external_id, start_time, duration_s, discipline, distance_m,
+             avg_hr, max_hr, avg_power, max_power, calories,
+             training_load, training_load_method, source_confidence)
+        VALUES (?, ?, ?, ?, 'cycling', ?, NULL, NULL, NULL, NULL, NULL, NULL, 'unknown', 0.5)
+        """,
+        (PROVIDER, "99", wrong_stored.isoformat(), 2900, 20000.0),
+    )
+    db.commit()
+
+    renormalize_provider(db, PROVIDER, connector)
+    db.commit()
+
+    row = db.execute(
+        "SELECT start_time FROM normalized_activities WHERE provider = ? AND external_id = ?",
+        (PROVIDER, "99"),
+    ).fetchone()
+    assert row["start_time"] == correct_utc.isoformat()
+
+    raw_row = db.execute(
+        "SELECT payload_json FROM raw_activities WHERE provider = ? AND external_id = ?",
+        (PROVIDER, "99"),
+    ).fetchone()
+    assert raw_row["payload_json"] == payload_json
 
 
 # --- Console noise (AC1/AC6, issue #44) ------------------------------------

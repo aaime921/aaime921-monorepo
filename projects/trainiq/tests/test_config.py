@@ -7,7 +7,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from trainiq.config import get_eufy_device_id, load_config, save_config, set_eufy_device_id
+from trainiq.config import (
+    get_athlete_timezone,
+    get_eufy_device_id,
+    load_config,
+    save_config,
+    set_athlete_timezone,
+    set_eufy_device_id,
+)
 
 
 def test_load_config_returns_empty_dict_when_file_does_not_exist(tmp_path: Path):
@@ -67,6 +74,35 @@ def test_set_eufy_device_id_overwrites_previous_value(tmp_path: Path):
     set_eufy_device_id(path, "old-device")
     set_eufy_device_id(path, "new-device")
     assert get_eufy_device_id(path) == "new-device"
+
+
+def test_get_athlete_timezone_returns_none_when_not_set(tmp_path: Path):
+    assert get_athlete_timezone(tmp_path / "config.json") is None
+
+
+def test_set_and_get_athlete_timezone_round_trips(tmp_path: Path):
+    path = tmp_path / "config.json"
+    set_athlete_timezone(path, "Europe/London")
+
+    assert get_athlete_timezone(path) == "Europe/London"
+
+
+def test_set_athlete_timezone_preserves_other_existing_config_keys(tmp_path: Path):
+    path = tmp_path / "config.json"
+    save_config(path, {"eufy": {"device_id": "device-xyz"}})
+
+    set_athlete_timezone(path, "Europe/London")
+
+    config = load_config(path)
+    assert config["eufy"]["device_id"] == "device-xyz"
+    assert config["athlete"]["timezone"] == "Europe/London"
+
+
+def test_set_athlete_timezone_overwrites_previous_value(tmp_path: Path):
+    path = tmp_path / "config.json"
+    set_athlete_timezone(path, "Europe/London")
+    set_athlete_timezone(path, "America/New_York")
+    assert get_athlete_timezone(path) == "America/New_York"
 
 
 def test_config_never_contains_a_secret_looking_key(tmp_path: Path):
