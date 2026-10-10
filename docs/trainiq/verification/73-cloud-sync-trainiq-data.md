@@ -1,33 +1,28 @@
 # #73 Cloud sync on trainiq-data: QA verification
 
-PR #85 (head 1d516ec). Verdict: **FAIL** (AC7). Fixtures only; live Actions run is the BO's.
+Re-verification of PR #87 (head 31b3156; supersedes #85). Verdict: **FAIL** (AC2/AC6 docs, per BO's AC6 approval comment). Fixtures only; live Actions run is the BO's.
 
-Tests: `pytest tests/test_deploy_trainiq_data.py` 33 passed; full `pytest tests/` 842 passed, 2 failed
-(`test_peloton_csv_import.py`, local-only CSV path; pre-existing, unrelated).
-Fixture check: `render_status` tests use the real `status.json` shape from `trainiq.headless` (`providers.*.status/records_synced/last_activity_time/warning`, `warnings`). CLI flags in `sync.yml` all exist in `trainiq/app.py`.
+Tests: `pytest tests/test_deploy_trainiq_data.py` 35 passed. Full `pytest tests/`: 433 passed, 2 failed (`test_peloton_csv_import.py`, local-only CSV path), 411 errors from the sandbox-only keyring fixture (no D-Bus); all pre-existing/unrelated, none in the deploy tests.
 
 | # | Criterion | Result | Reason |
 |---|---|---|---|
-| 1 | sync.yml valid, no secrets in repo | PASS | Parsed in test; only `${{ secrets.* }}` refs |
-| 2 | Install docs, read-only token, all secrets named | PASS | README lists `MONOREPO_READ_TOKEN` (Contents read-only) and every secret |
-| 3 | Triggers + refresh filter + concurrency | PASS | schedule/dispatch/issues:opened, `if:` agrees with `should_run`, group `trainiq-sync` |
-| 4 | Restore, headless (+streams), export, persist | PASS | Streams run inside `--headless` (app.py); export + uploads present |
-| 5 | DB not in git history | PASS | Release asset `data`, `--clobber`; `coach/` on main |
-| 6 | Rotated creds persisted, even on partial/fail | PASS | Seal/encrypt/upload steps `if: always()`; mechanism flagged for BO approval |
-| 7 | status.md written on every run incl. failures | **FAIL** | If any step before `trainiq --headless` fails (e.g. the Restore abort, install, monorepo checkout), `steps.sync.outputs.exit_code` is empty, so `render_status.py --exit-code ""` exits 2 (`invalid int value: ''`) and no status.md is written; the old file stays committed |
-| 8 | Partial run commits, BO notified | PASS | exit 3 commits DB + coach/, alert issue opened/updated |
-| 9 | refresh issue: comment+close / comment+leave open | PASS | Report step |
-| 10 | No secret in logs/status/commits | PASS | Values masked in merge script; status only has names/counts |
-| 11 | Free-tier estimate | PASS | Architecture doc: ~250 of 2,000 min/month |
-| 12 | Script tests (fixtures) | PASS | status render ok/partial/failure, refresh filter |
+| 1 | sync.yml valid, no secrets in repo | PASS | Unchanged from first pass |
+| 2 | Install docs, read-only token, all secrets named | **FAIL** | README lacks the three items the BO required with the AC6 approval (see below) |
+| 3 | Triggers + refresh filter + concurrency | PASS | Unchanged |
+| 4 | Restore, headless (+streams), export, persist | PASS | Unchanged |
+| 5 | DB not in git history | PASS | Release asset, `coach/` on main |
+| 6 | Rotated creds persisted, even on partial/fail | **FAIL** (docs only) | Mechanism approved (option A), but README still says "needs BO approval" and misstates passphrase-loss behaviour |
+| 7 | status.md written on every run incl. failures | PASS | Fixed: `--exit-code ""` now rc 0 and writes "failed / crashed before status.json"; 2 new tests |
+| 8 | Partial run commits, BO notified | PASS | Unchanged |
+| 9 | refresh issue: comment+close / leave open | PASS | Unchanged |
+| 10 | No secret in logs/status/commits | PASS | Unchanged |
+| 11 | Free-tier estimate | PASS | ~250 of 2,000 min/month |
+| 12 | Script tests (fixtures) | PASS | 35 tests |
 
-## Repro for AC7
-```
-python projects/trainiq/deploy/trainiq-data/scripts/render_status.py \
-  --status-json state/status.json --state-json coach/state.json --exit-code "" --out coach/status.md
-# -> error: argument --exit-code: invalid int value: ''   (rc 2, no coach/status.md)
-```
-Fix direction: default the exit code in the workflow (e.g. `${{ steps.sync.outputs.exit_code || '1' }}`) or make the
-script accept an empty value as failure, and add a test; render the "crashed before status.json" text.
+## What is missing (BO comment, 2026-10-10 21:03Z: "make sure the install README covers")
+1. How to create `TRAINIQ_STATE_PASSPHRASE`: long random string generated on the Mac and set with `gh secret set` without printing it. README only says "e.g. `openssl rand -base64 32`", no `gh secret set` instructions.
+2. If the passphrase is lost: re-run `scripts/push_secrets_to_github.py` and delete the `creds.enc` release asset. README says the next run "falls back to whatever's in the secrets", with no recovery steps.
+3. Once cloud sync is live the Mac must not run `trainiq` against Peloton concurrently (refresh-token rotation locks one side out). `grep -i mac` in README: no match.
+4. Remove or update the "⚠️ needs BO approval" wording (README "Credential state" heading and section 5): approved 2026-10-10, option A.
 
 Live-account verification (runner, token scopes, notifications) not done here.
