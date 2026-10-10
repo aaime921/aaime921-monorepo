@@ -8,12 +8,15 @@ from __future__ import annotations
 from pathlib import Path
 
 from trainiq.config import (
+    WeightGoal,
     get_athlete_timezone,
     get_eufy_device_id,
+    get_weight_goal,
     load_config,
     save_config,
     set_athlete_timezone,
     set_eufy_device_id,
+    set_weight_goal,
 )
 
 
@@ -103,6 +106,37 @@ def test_set_athlete_timezone_overwrites_previous_value(tmp_path: Path):
     set_athlete_timezone(path, "Europe/London")
     set_athlete_timezone(path, "America/New_York")
     assert get_athlete_timezone(path) == "America/New_York"
+
+
+def test_get_weight_goal_returns_none_when_not_set(tmp_path: Path):
+    assert get_weight_goal(tmp_path / "config.json") is None
+
+
+def test_get_weight_goal_returns_none_when_only_one_value_set(tmp_path: Path):
+    """Never a partially-guessed goal — both values or neither."""
+    path = tmp_path / "config.json"
+    save_config(path, {"athlete": {"start_weight_kg": 82.1}})
+    assert get_weight_goal(path) is None
+
+
+def test_set_and_get_weight_goal_round_trips(tmp_path: Path):
+    path = tmp_path / "config.json"
+    set_weight_goal(path, start_weight_kg=82.1, goal_weight_kg=72.0)
+
+    goal = get_weight_goal(path)
+    assert goal == WeightGoal(start_weight_kg=82.1, goal_weight_kg=72.0)
+
+
+def test_set_weight_goal_preserves_other_existing_config_keys(tmp_path: Path):
+    path = tmp_path / "config.json"
+    save_config(path, {"athlete": {"timezone": "Europe/London"}, "eufy": {"device_id": "device-xyz"}})
+
+    set_weight_goal(path, start_weight_kg=82.1, goal_weight_kg=72.0)
+
+    config = load_config(path)
+    assert config["athlete"]["timezone"] == "Europe/London"
+    assert config["eufy"]["device_id"] == "device-xyz"
+    assert config["athlete"]["goal_weight_kg"] == 72.0
 
 
 def test_config_never_contains_a_secret_looking_key(tmp_path: Path):

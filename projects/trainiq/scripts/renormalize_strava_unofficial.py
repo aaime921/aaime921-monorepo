@@ -29,10 +29,10 @@ Run against your real database once this ships:
 
 Note on training_load: re-running build_canonical_record() also recomputes
 training_load/training_load_method/source_confidence, not just discipline.
-Today this is a no-op for training_load (resolves to None/"unknown"
-regardless of discipline, since no AthleteProfile persistence exists yet)
-— but if that changes before you run this script, re-normalizing will also
-assign real training_load values to these rows for the first time.
+Issue #71: this script now loads the stored athlete_profile (if any) and
+passes it through, so training_load is recomputed for real rather than
+reset to None/"unknown" on every run. With no profile stored yet, it still
+resolves to unknown, same as before.
 
 Note on logging (issue #44): this script configures logging the same way
 trainiq/app.py's main() does, so the per-record "training_load unknown"
@@ -46,6 +46,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from trainiq.athlete.store import load_athlete_profile
 from trainiq.config import get_athlete_timezone
 from trainiq.connectors.strava_unofficial import PROVIDER, StravaUnofficialConnector
 from trainiq.credentials.store import CredentialStore
@@ -79,7 +80,15 @@ def main() -> int:
         credential_store = CredentialStore(conn=conn)
         local_timezone = get_athlete_timezone(args.config_path)
         connector = StravaUnofficialConnector(credential_store, local_timezone=local_timezone)
-        result = renormalize_provider(conn, PROVIDER, connector)
+
+        # Issue #71: without the stored profile, every re-normalized row's
+        # training_load resets to None/"unknown" (compute_training_load's
+        # documented behavior when profile is None) — silently discarding
+        # real load history on a routine re-normalization run.
+        athlete_profile = load_athlete_profile(conn)
+        if athlete_profile is None:
+            print("Warning: no athlete profile stored — training_load will be recomputed as unknown for every row.")
+        result = renormalize_provider(conn, PROVIDER, connector, athlete_profile=athlete_profile)
 
         strategy_obj = connector.active_strategy()
         strategy = strategy_obj.value if strategy_obj is not None else "default"

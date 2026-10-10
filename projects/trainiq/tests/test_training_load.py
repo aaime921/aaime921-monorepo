@@ -209,3 +209,50 @@ def test_unknown_training_load_never_prints_to_console_across_many_records(tmp_p
 
     diagnostic_content = (tmp_path / "diagnostic.log").read_text()
     assert diagnostic_content.count("training_load unknown") == 50
+
+
+# --- Issue #71: TRIMP uses moving time, not elapsed duration, when available ---
+
+def test_trimp_uses_moving_time_over_elapsed_duration_when_present():
+    """The exact discrepancy issue #71 reports: a walk with lots of paused
+    (non-moving) elapsed time must not score higher than a continuously-
+    moving activity of the same elapsed duration and HR, once moving_time_s
+    is available."""
+    profile = AthleteProfile(sex="male", resting_hr=60, max_hr=180)
+    paused_walk = {"duration_s": 5400, "moving_time_s": 2700, "avg_hr": 120}
+    continuous_run = {"duration_s": 5400, "moving_time_s": 5400, "avg_hr": 120}
+
+    walk_result = compute_training_load(paused_walk, profile)
+    run_result = compute_training_load(continuous_run, profile)
+
+    assert walk_result.method == TrainingLoadMethod.TRIMP
+    assert run_result.method == TrainingLoadMethod.TRIMP
+    assert walk_result.load < run_result.load
+
+
+def test_trimp_falls_back_to_elapsed_duration_when_moving_time_absent():
+    """No regression for providers/records with no moving_time_s at all
+    (e.g. Peloton, or pre-issue-#48 Strava rows): TRIMP must compute
+    exactly as it did before this fix."""
+    profile = AthleteProfile(sex="male", resting_hr=50, max_hr=190)
+    normalized = {"duration_s": 1800, "avg_hr": 145, "moving_time_s": None}
+
+    with_none = compute_training_load(normalized, profile)
+    without_key = compute_training_load({"duration_s": 1800, "avg_hr": 145}, profile)
+
+    assert with_none.load == without_key.load
+    assert with_none.method == TrainingLoadMethod.TRIMP
+
+
+def test_trimp_ignores_a_nonpositive_moving_time_and_uses_elapsed_duration():
+    """Defensive: a zero/negative moving_time_s (bad data) must not zero
+    out or invert TRIMP — it falls back to elapsed duration, the same
+    "validate > 0" guard duration_s itself already gets."""
+    profile = AthleteProfile(sex="male", resting_hr=50, max_hr=190)
+    normalized_zero = {"duration_s": 1800, "avg_hr": 145, "moving_time_s": 0}
+    normalized_no_moving_time = {"duration_s": 1800, "avg_hr": 145}
+
+    result = compute_training_load(normalized_zero, profile)
+    baseline = compute_training_load(normalized_no_moving_time, profile)
+
+    assert result.load == baseline.load

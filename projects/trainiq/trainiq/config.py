@@ -17,6 +17,7 @@ one job.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
@@ -59,4 +60,33 @@ def get_athlete_timezone(config_path: Path) -> Optional[str]:
 def set_athlete_timezone(config_path: Path, timezone_name: str) -> None:
     config = load_config(config_path)
     config.setdefault("athlete", {})["timezone"] = timezone_name
+    save_config(config_path, config)
+
+
+@dataclass(frozen=True)
+class WeightGoal:
+    """Issue #71: the athlete's weight-loss goal. Not in the database (no
+    `athlete_profile` column for it) — config.json is the same "non-secret,
+    not worth a migration" fit this module already exists for."""
+    start_weight_kg: float
+    goal_weight_kg: float
+
+
+def get_weight_goal(config_path: Path) -> Optional[WeightGoal]:
+    """None when either value is missing — never a partially-guessed goal.
+    The export's profile.md/weight.md render "goal: not configured" in
+    that case rather than inventing a number."""
+    athlete = load_config(config_path).get("athlete", {})
+    start_weight_kg = athlete.get("start_weight_kg")
+    goal_weight_kg = athlete.get("goal_weight_kg")
+    if start_weight_kg is None or goal_weight_kg is None:
+        return None
+    return WeightGoal(start_weight_kg=start_weight_kg, goal_weight_kg=goal_weight_kg)
+
+
+def set_weight_goal(config_path: Path, start_weight_kg: float, goal_weight_kg: float) -> None:
+    config = load_config(config_path)
+    athlete = config.setdefault("athlete", {})
+    athlete["start_weight_kg"] = start_weight_kg
+    athlete["goal_weight_kg"] = goal_weight_kg
     save_config(config_path, config)

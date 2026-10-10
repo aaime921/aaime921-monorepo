@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from trainiq.app import _build_configured_connectors, _run_strava_streams_enrichment, main
+from trainiq.app import _build_configured_connectors, _parse_args, _run_strava_streams_enrichment, main
 from trainiq.config import set_eufy_device_id
 from trainiq.connectors.eufy import PROVIDER as EUFY_PROVIDER
 from trainiq.connectors.peloton import PROVIDER as PELOTON_PROVIDER
@@ -698,3 +698,49 @@ def test_auth_failure_during_enrichment_is_reported_not_raised(db):
     _run_strava_streams_enrichment(db, connectors=[connector], reporter=reporter)  # must not raise
 
     assert any("streams enrichment stopped" in line for line in reporter.lines)
+
+
+# --- `export` subcommand (issue #71) ---------------------------------------
+
+def test_parse_args_bare_and_configure_have_no_command():
+    """Adding the `export` subparser must not change bare `trainiq` or
+    `trainiq --configure` — both must keep going through the existing
+    sync path (`args.command is None`)."""
+    assert _parse_args([]).command is None
+    assert _parse_args(["--configure"]).command is None
+    assert _parse_args(["--configure"]).configure is True
+
+
+def test_parse_args_export_requires_out():
+    import pytest
+
+    with pytest.raises(SystemExit):
+        _parse_args(["export"])
+
+
+def test_parse_args_export_parses_out_and_as_of():
+    args = _parse_args(["export", "--out", "/tmp/somewhere", "--as-of", "2026-10-10"])
+    assert args.command == "export"
+    assert str(args.out) == "/tmp/somewhere"
+    assert args.as_of == "2026-10-10"
+
+
+def test_main_export_command_writes_files_and_does_not_run_sync(isolated_app_dirs, tmp_path):
+    """main(["export", ...]) must drive run_export(), not the connector
+    sync path at all — no credential store, no SynchronizationEngine."""
+    out_dir = tmp_path / "coach_export"
+
+    exit_code = main(["export", "--out", str(out_dir)])
+
+    assert exit_code == 0
+    assert (out_dir / "profile.md").exists()
+    assert (out_dir / "recent.json").exists()
+
+
+def test_main_export_command_respects_as_of(isolated_app_dirs, tmp_path):
+    out_dir = tmp_path / "coach_export"
+
+    exit_code = main(["export", "--out", str(out_dir), "--as-of", "2026-01-01"])
+
+    assert exit_code == 0
+    assert "As of: 2026-01-01" in (out_dir / "profile.md").read_text()

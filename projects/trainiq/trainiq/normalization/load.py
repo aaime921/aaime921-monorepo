@@ -26,6 +26,16 @@ logic — it IS the correct behavior per ADR-016, applied to a case where
 the missing input is a whole persistent profile rather than a single
 field. When Epic 7 exists, this module requires zero changes; only the
 caller starts passing a populated profile instead of None.
+
+Issue #71 fix: TRIMP's duration input is `moving_time_s` when the record
+has one (and it's a valid positive value), falling back to the elapsed
+`duration_s` only when moving time is absent. Before this fix, TRIMP
+always used elapsed duration, so a long paused walk (lots of elapsed time,
+little actual moving time) could outscore a shorter, continuously-moving
+run — the exact discrepancy issue #71 reports (a 9 km walk at 136 vs. an
+8.8 km run at 69). TSS is deliberately left on elapsed duration (unchanged)
+— Peloton's avg_power already reflects pedalling time only, so elapsed
+duration doesn't have the same pause-inflation problem there.
 """
 
 from __future__ import annotations
@@ -80,7 +90,9 @@ def compute_training_load(normalized: dict, profile: Optional[AthleteProfile]) -
     avg_hr = normalized.get("avg_hr")
     has_hr_baseline = bool(profile.sex and profile.resting_hr and profile.max_hr)
     if avg_hr is not None and has_hr_baseline:
-        return _compute_trimp(avg_hr, duration_s, profile)
+        moving_time_s = normalized.get("moving_time_s")
+        trimp_time_s = moving_time_s if moving_time_s and moving_time_s > 0 else duration_s
+        return _compute_trimp(avg_hr, trimp_time_s, profile)
 
     missing = []
     if avg_power is None or not profile.ftp_watts:
@@ -106,7 +118,7 @@ def _compute_tss(avg_power: float, duration_s: int, ftp_watts: int) -> TrainingL
     return TrainingLoadResult(load=round(tss, 1), method=TrainingLoadMethod.TSS, reason=None)
 
 
-def _compute_trimp(avg_hr: int, duration_s: int, profile: AthleteProfile) -> TrainingLoadResult:
+def _compute_trimp(avg_hr: int, time_s: int, profile: AthleteProfile) -> TrainingLoadResult:
     """Banister TRIMP, sex-specific exponential weighting (Milestone A §3).
     heart-rate-reserve is clamped to [0, 1] — an engineering judgment, not
     a researched constant: real-world HR readings and stored baselines are
@@ -117,7 +129,7 @@ def _compute_trimp(avg_hr: int, duration_s: int, profile: AthleteProfile) -> Tra
     same way Milestone C flagged its own threshold calibrations."""
     hrr = (avg_hr - profile.resting_hr) / (profile.max_hr - profile.resting_hr)
     hrr = max(0.0, min(hrr, 1.0))
-    duration_min = duration_s / 60
+    duration_min = time_s / 60
     if profile.sex == "female":
         weighting_constant, exponent_coefficient = 0.86, 1.67
     else:
