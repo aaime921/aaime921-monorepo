@@ -1,0 +1,65 @@
+{
+  "_captured": "2026-10-10, BO's real account, read-only",
+  "_note": "GET /api/v2/ride/archived?browse_category=cycling&class_type_id=<Power Zone>&duration=2700&sort_by=original_air_time&desc=true. Trimmed to 3.",
+  "response": {
+    "_other_top_level_keys": [
+      "browse_categories",
+      "class_types",
+      "count",
+      "data",
+      "fitness_disciplines",
+      "hide_explicit_rides",
+      "hide_prenatal_rides",
+      "instructors",
+      "page",
+      "page_count",
+      "ride_types",
+      "show_next",
+      "show_previous",
+      "sort_by",
+      "total"
+    ],
+    "count": 3,
+    "data": [
+      {
+        "class_type_ids": [
+          "665395ff3abf4081bf315686227d1a51"
+        ],
+        "difficulty_estimate": 6.680297397769516,
+        "duration": 2700,
+        "fitness_discipline": "cycling",
+        "id": "16348177fdde41d9bc9679b44621f234",
+        "instructor_id": "1e59e949a19341539214a4a13ea7ff01",
+        "original_air_time": 1791633314,
+        "title": "45 min Power Zone Endurance Ride"
+      },
+      {
+        "class_type_ids": [
+          "665395ff3abf4081bf315686227d1a51"
+        ],
+        "difficulty_estimate": 6.8546916890080425,
+        "duration": 2700,
+        "fitness_discipline": "cycling",
+        "id": "823faefe14e44b1b85290ccdb89ebe21",
+        "instructor_id": "4672db841da0495caf4b8f9cda405512",
+        "original_air_time": 1790576723,
+        "title": "45 min Power Zone Endurance Ride"
+      },
+      {
+        "class_type_ids": [
+          "665395ff3abf4081bf315686227d1a51"
+        ],
+        "difficulty_estimate": 6.632348268191929,
+        "duration": 2700,
+        "fitness_discipline": "cycling",
+        "id": "2cae43681388419894251249731f360a",
+        "instructor_id": "1e59e949a19341539214a4a13ea7ff01",
+        "original_air_time": 1790136024,
+        "title": "45 min Power Zone Endurance Ride"
+      }
+    ],
+    "page": 0,
+    "page_count": 131,
+    "total": 392
+  }
+}

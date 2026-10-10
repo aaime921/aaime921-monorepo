@@ -1,0 +1,211 @@
+{
+  "_captured": "2026-10-10, BO's real account, read-only",
+  "_note": "GET /api/workout/{id}/performance_graph?every_n=60; series trimmed to 5 points. Look up metrics/summaries by 'slug', never by position.",
+  "response": {
+    "_other_top_level_keys": [
+      "average_summaries",
+      "duration",
+      "effort_zones",
+      "has_apple_watch_metrics",
+      "is_class_plan_shown",
+      "is_location_data_accurate",
+      "location_data",
+      "metrics",
+      "muscle_group_score",
+      "performance_graph_available",
+      "seconds_since_pedaling_start",
+      "segment_list",
+      "splits_data",
+      "splits_metrics",
+      "summaries",
+      "summary_available",
+      "target_metrics_compliance",
+      "target_metrics_performance_data"
+    ],
+    "average_summaries": [
+      {
+        "display_name": "Avg Output",
+        "display_unit": "watts",
+        "slug": "avg_output",
+        "value": 132
+      },
+      {
+        "display_name": "Avg Cadence",
+        "display_unit": "rpm",
+        "slug": "avg_cadence",
+        "value": 85
+      },
+      {
+        "display_name": "Avg Resistance",
+        "display_unit": "%",
+        "slug": "avg_resistance",
+        "value": 41
+      },
+      {
+        "display_name": "Avg Speed",
+        "display_unit": "kph",
+        "slug": "avg_speed",
+        "value": 29.1
+      }
+    ],
+    "duration": 3600,
+    "effort_zones": {
+      "heart_rate_zone_durations": {
+        "heart_rate_z1_duration": 499,
+        "heart_rate_z2_duration": 441,
+        "heart_rate_z3_duration": 2395,
+        "heart_rate_z4_duration": 235,
+        "heart_rate_z5_duration": 0
+      },
+      "total_effort_points": 64.2
+    },
+    "metrics": [
+      {
+        "average_value": 132,
+        "display_name": "Output",
+        "display_unit": "watts",
+        "max_value": 295,
+        "slug": "output",
+        "values": [
+          96,
+          79,
+          79,
+          79,
+          132
+        ]
+      },
+      {
+        "average_value": 85,
+        "display_name": "Cadence",
+        "display_unit": "rpm",
+        "max_value": 124,
+        "slug": "cadence",
+        "values": [
+          104,
+          99,
+          101,
+          104,
+          107
+        ]
+      },
+      {
+        "average_value": 41,
+        "display_name": "Resistance",
+        "display_unit": "%",
+        "max_value": 74,
+        "slug": "resistance",
+        "values": [
+          28,
+          25,
+          24,
+          25,
+          37
+        ]
+      },
+      {
+        "average_value": 29.1,
+        "display_name": "Speed",
+        "display_unit": "kph",
+        "max_value": 39.9,
+        "slug": "speed",
+        "values": [
+          25.8,
+          23.6,
+          23.7,
+          23.6,
+          29.3
+        ]
+      },
+      {
+        "average_value": 127,
+        "display_name": "Heart Rate",
+        "display_unit": "bpm",
+        "max_value": 149,
+        "missing_data_duration": 30,
+        "slug": "heart_rate",
+        "values": [
+          81,
+          85,
+          84,
+          86,
+          95
+        ],
+        "zones": [
+          {
+            "display_name": "Zone 1",
+            "duration": 499,
+            "max_value": 109,
+            "min_value": 0,
+            "range": "<110 bpm",
+            "slug": "zone1"
+          },
+          {
+            "display_name": "Zone 2",
+            "duration": 441,
+            "max_value": 126,
+            "min_value": 110,
+            "range": "110-126 bpm",
+            "slug": "zone2"
+          },
+          {
+            "display_name": "Zone 3",
+            "duration": 2395,
+            "max_value": 143,
+            "min_value": 127,
+            "range": "127-143 bpm",
+            "slug": "zone3"
+          },
+          {
+            "display_name": "Zone 4",
+            "duration": 235,
+            "max_value": 160,
+            "min_value": 144,
+            "range": "144-160 bpm",
+            "slug": "zone4"
+          },
+          {
+            "display_name": "Zone 5",
+            "duration": 0,
+            "max_value": 170,
+            "min_value": 161,
+            "range": ">=161 bpm",
+            "slug": "zone5"
+          }
+        ]
+      }
+    ],
+    "seconds_since_pedaling_start": [
+      1,
+      61,
+      121,
+      181,
+      241
+    ],
+    "summaries": [
+      {
+        "display_name": "Total Output",
+        "display_unit": "kj",
+        "slug": "total_output",
+        "value": 476
+      },
+      {
+        "display_name": "Distance",
+        "display_unit": "km",
+        "slug": "distance",
+        "value": 29.04569
+      },
+      {
+        "display_name": "Active Calories",
+        "display_unit": "kcal",
+        "slug": "active_calories",
+        "value": 493
+      },
+      {
+        "display_name": "Total Calories",
+        "display_unit": "kcal",
+        "slug": "total_calories",
+        "value": 599
+      }
+    ]
+  }
+}

@@ -46,3 +46,11 @@ Comment with a summary, PR link, and how you tested. Remove `stage:dev`, add `st
 - Tests: fixtures from real captures (`docs/trainiq/verification/`), mocked API clients, multi-page pagination, string cursor across two syncs, and separate 429 / 401-403 / 5xx cases. No live-account tests in CI.
 - DB changes: follow the existing approach in `projects/trainiq/trainiq/storage/schema.py`; handle NULL or backfill for existing rows and test both a fresh DB and an upgrade of existing data.
 - Never fabricate data in `normalize()`; never assume cursor type, always coerce to string.
+
+## Live-shape fixtures (mandatory)
+
+The sandbox cannot reach Peloton, Strava or Eufy. Any change that reads their
+responses or the DB's timestamp/provider columns must be tested against the real
+samples in `projects/trainiq/tests/fixtures/live/` (see its README), not a
+hand-written shape. Guessed shapes passed tests and then failed on real data four
+times (#45, #46, #71, #72).

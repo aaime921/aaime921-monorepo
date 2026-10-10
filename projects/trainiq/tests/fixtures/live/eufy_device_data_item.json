@@ -1,0 +1,43 @@
+{
+  "_captured": "2026-10-10, BO's real account, read-only",
+  "_note": "One item from GET home-api.eufylife.com/v1/device/{device_id}/data (as stored in raw_activities). scale_data.weight is DECI-KG; body_fat 0 means 'not measured' (#42).",
+  "response": {
+    "create_time": 1789148656,
+    "customer_id": "<redacted>",
+    "device_id": "eufyt9150cfe90116a933",
+    "group_id": "",
+    "id": "63783246",
+    "product_code": "",
+    "scale_data": {
+      "bmi": 27.4,
+      "bmr": 1519,
+      "body_age": 53,
+      "body_fat": 28,
+      "body_fat_mass": 22.9,
+      "body_type": 8,
+      "bone": 0,
+      "bone_mass": 3,
+      "fat_free_weight": 0,
+      "fat_mode": 0,
+      "head_size": 0,
+      "heart_rate": 93,
+      "height": 0,
+      "impedance": 3913395,
+      "mode": 0,
+      "muscle": 0,
+      "muscle_mass": 56.2,
+      "protein_ratio": 15.1,
+      "skeletal_muscle_mass": 30.8,
+      "standard_weight": 0,
+      "subcutaneous_fat_rate": 24,
+      "visceral_fat": 14,
+      "visceral_fat_index": 0,
+      "water": 49.3,
+      "water_weight": 0,
+      "weight": 821
+    },
+    "status": 0,
+    "update_time": 1789148656,
+    "user_id": "<redacted>"
+  }
+}

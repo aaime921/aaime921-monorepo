@@ -1,0 +1,138 @@
+{
+  "_captured": "2026-10-10, BO's real account, read-only",
+  "_note": "GET /api/ride/metadata_mappings: class_types and instructors are LISTS (all disciplines, incl. inactive) (#72). Trimmed.",
+  "response": {
+    "_counts": {
+      "class_types": 169,
+      "instructors": 315
+    },
+    "_other_top_level_keys": [
+      "class_types",
+      "content_focus_labels",
+      "content_formats",
+      "device_type_display_names",
+      "difficulty_levels",
+      "equipment",
+      "fitness_disciplines",
+      "instructors",
+      "locales"
+    ],
+    "class_types": [
+      {
+        "display_name": "Warm Up",
+        "fitness_discipline": "cycling",
+        "id": "57dbf6f9a4904a9f80e302380855bdb7",
+        "is_active": true,
+        "list_order": 30,
+        "name": "Warm Up Ride",
+        "source_of_save": null,
+        "standalone_display_name": "Cycling Warm Up"
+      },
+      {
+        "display_name": "Cool Down",
+        "fitness_discipline": "cycling",
+        "id": "a1fa617f3ba14c0a8c25468d5c88b3ea",
+        "is_active": true,
+        "list_order": 31,
+        "name": "Cool Down Ride",
+        "source_of_save": null,
+        "standalone_display_name": "Cycling Cool Down "
+      },
+      {
+        "display_name": "Beginner",
+        "fitness_discipline": "cycling",
+        "id": "9f9be657134e4d868d76ae4988da01f1",
+        "is_active": true,
+        "list_order": 32,
+        "name": "Beginner",
+        "source_of_save": null,
+        "standalone_display_name": "Beginner Cycling"
+      },
+      {
+        "display_name": "Low Impact",
+        "fitness_discipline": "cycling",
+        "id": "59a49f882ea9475faa3110d50a8fb3f3",
+        "is_active": true,
+        "list_order": 33,
+        "name": "Low Impact",
+        "source_of_save": null,
+        "standalone_display_name": "Low Impact Cycling"
+      },
+      {
+        "display_name": "Music",
+        "fitness_discipline": "cycling",
+        "id": "c87e20095d80463db5ce04df7fe2b989",
+        "is_active": true,
+        "list_order": 34,
+        "name": "Music (Cycling)",
+        "source_of_save": null,
+        "standalone_display_name": "Music Cycling"
+      },
+      {
+        "display_name": "Intervals",
+        "fitness_discipline": "cycling",
+        "id": "7579b9edbdf9464fa19eb58193897a73",
+        "is_active": true,
+        "list_order": 35,
+        "name": "Intervals",
+        "source_of_save": null,
+        "standalone_display_name": "Intervals Cycling"
+      },
+      {
+        "display_name": "Sled Training",
+        "fitness_discipline": "running",
+        "id": "d2b8a5d5655244e1a64b8d9c15b9647e",
+        "is_active": false,
+        "list_order": 1,
+        "name": "Sled Training",
+        "source_of_save": "ride_categorizations",
+        "standalone_display_name": "Sled Training"
+      },
+      {
+        "display_name": "Daily",
+        "fitness_discipline": "meditation",
+        "id": "061b61771c8348d298214b7fde76f62e",
+        "is_active": false,
+        "list_order": 2,
+        "name": "Breathwrk Daily",
+        "source_of_save": "monolith",
+        "standalone_display_name": "Daily"
+      }
+    ],
+    "instructors": [
+      {
+        "first_name": "Multiple Instructors",
+        "fitness_disciplines": [
+          "strength"
+        ],
+        "id": "00ac4af8b8024c3891883c81c212c105",
+        "name": "Multiple Instructors"
+      },
+      {
+        "first_name": "Erik & Mayla",
+        "fitness_disciplines": [],
+        "id": "03ad1bf76a1043a08f5054925eecb089",
+        "name": "Erik & Mayla"
+      },
+      {
+        "first_name": "Mayla & Nico",
+        "fitness_disciplines": [
+          "meditation",
+          "running",
+          "walking",
+          "yoga"
+        ],
+        "id": "0456d12e710a4ece90694de20952b7bc",
+        "name": "Mayla & Nico"
+      },
+      {
+        "first_name": "Ash & Katie",
+        "fitness_disciplines": [
+          "caesar"
+        ],
+        "id": "04aeec1143fe4e6d94362c103b22dee8",
+        "name": "Ash & Katie"
+      }
+    ]
+  }
+}

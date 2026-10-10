@@ -1,0 +1,51 @@
+{
+  "_captured": "2026-10-10, BO's real account, read-only",
+  "_note": "GET /api/ride/{ride_id}/details: ride is NESTED under 'ride'; class_types is a top-level LIST.",
+  "response": {
+    "_other_top_level_keys": [
+      "averages",
+      "class_types",
+      "default_album_images",
+      "disabled_leaderboard_filters",
+      "events",
+      "excluded_platforms",
+      "instructor_cues",
+      "is_ftp_test",
+      "is_power_zone_class",
+      "lanebreak_info",
+      "last_time_metrics",
+      "pace_target_type",
+      "playlist",
+      "related_rides",
+      "ride",
+      "sampled_top_tags",
+      "segments",
+      "target_class_metrics",
+      "target_metrics_data"
+    ],
+    "class_types": [
+      {
+        "id": "665395ff3abf4081bf315686227d1a51",
+        "name": "Power Zone"
+      }
+    ],
+    "is_power_zone_class": true,
+    "ride": {
+      "class_type_ids": [
+        "665395ff3abf4081bf315686227d1a51"
+      ],
+      "difficulty_estimate": 6.074673480976718,
+      "duration": 3600,
+      "fitness_discipline": "cycling",
+      "id": "2e67e863d67e4e21bfb1551e1c5d1a2e",
+      "instructor": {
+        "id": "304389e2bfe44830854e071bffc137c9",
+        "name": "Matt Wilpers"
+      },
+      "instructor_id": "304389e2bfe44830854e071bffc137c9",
+      "is_explicit": true,
+      "original_air_time": 1786190159,
+      "title": "60 min Power Zone Endurance Ride"
+    }
+  }
+}

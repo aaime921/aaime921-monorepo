@@ -43,3 +43,14 @@ Remove `stage:qa`, add `stage:dev`.
 - Error paths: 429 returns `retry_after_s` in `TransientError`; 401/403 escalates to RecoveryRequired and clears credentials; 5xx backs off without escalating; also empty, single and many-page responses.
 - Eufy: confirm the weight conversion factor is applied. Strava session cookie: test valid and stale-cookie (401/403).
 - If the BO did live-account testing, note "live-account verification completed separately" in your result.
+
+## Live-shape fixtures (mandatory)
+
+The sandbox cannot reach Peloton, Strava or Eufy. Any change that reads their
+responses or the DB's timestamp/provider columns must be tested against the real
+samples in `projects/trainiq/tests/fixtures/live/` (see its README), not a
+hand-written shape. Guessed shapes passed tests and then failed on real data four
+times (#45, #46, #71, #72).
+
+QA: confirm such a test exists and passes; if a new endpoint has no live fixture,
+fail the criterion and ask the BO to capture one (`needs:human`).

@@ -1,0 +1,27 @@
+{
+  "_captured": "2026-10-10, BO's real account, read-only",
+  "_note": "GET /api/peloton/{workout.peloton_id}: a class SESSION; its ride_id is the real class id (#58).",
+  "response": {
+    "countdown": null,
+    "created_at": 1791567409,
+    "end_time": 1791571207,
+    "id": "56e9b2894367434e83749bd2fed88138",
+    "is_complete": true,
+    "is_encore": false,
+    "is_live": false,
+    "is_session": false,
+    "is_studio": false,
+    "join_token": "eyJob21lX3BlbG90b25faWQiOiBudWxsLCAicmlkZV9pZCI6ICIyZTY3ZTg2M2Q2N2U0ZTIxYmZiMTU1MWUxYzVkMWEyZSIsICJzdHVkaW9fcGVsb3Rvbl9pZCI6IG51bGwsICJ0eXBlIjogIm9uX2RlbWFuZCJ9",
+    "live_class_category": "",
+    "pedaling_end_time": 1791571069,
+    "pedaling_start_time": 1791567469,
+    "ride_id": "2e67e863d67e4e21bfb1551e1c5d1a2e",
+    "scheduled_start_time": null,
+    "seconds_since_start": null,
+    "server_time": 1791651208,
+    "start_time": 1791567409,
+    "status": "COMPLETE",
+    "total_home_reservations": 0,
+    "total_workouts": 1
+  }
+}

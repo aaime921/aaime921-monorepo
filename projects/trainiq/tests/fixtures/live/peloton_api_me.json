@@ -1,0 +1,14 @@
+{
+  "_captured": "2026-10-10, BO's real account, read-only",
+  "_note": "GET /api/me (subset of keys). NOTE: there is NO distance_unit field (#45/#57).",
+  "response": {
+    "height_unit": "metric",
+    "id": "e97a6b4c7c694ad09c3addcd4c88d112",
+    "locale": "en-US",
+    "total_non_pedaling_metric_workouts": 2,
+    "total_pedaling_metric_workouts": 135,
+    "total_workouts": 137,
+    "username": "<redacted>",
+    "weight_unit": "metric"
+  }
+}
