@@ -33,11 +33,25 @@ executing package is located inside macOS Trash — see trainiq.safety for
 why and how. Every startup also logs the resolved package path, so any
 future "which copy of TrainIQ is actually running" question is answered
 directly by diagnostic.log rather than debugged from scratch.
+
+Issue #70 (headless/cloud run): `--headless` (also `TRAINIQ_HEADLESS=1`)
+skips the setup wizard entirely (never prompts), always writes
+`status.json` (trainiq.headless), and exits with one of
+trainiq.headless's documented codes instead of always 0/1. DB/config/log
+paths are resolved via trainiq.paths — flag > env var > today's exact
+macOS defaults (`APP_SUPPORT_DIR`/`CONFIG_PATH`/`LOG_DIR` below, still the
+module-level constants tests redirect, now themselves computed from
+`trainiq.paths.platform_defaults()` so an unpatched Linux run gets XDG
+paths instead of a nonsensical `~/Library` one). Interactive/Mac behavior
+is unaffected when no flag/env override is given (AC10) — see
+`main()`'s `headless` branch, taken only when asked for.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
+import os
 import sys
 from datetime import date
 from pathlib import Path
@@ -52,18 +66,21 @@ from trainiq.connectors.strava_streams import NEW_PER_SYNC_CAP, enrich_strava_st
 from trainiq.connectors.strava_unofficial import CRED_STRAVA_SESSION_COOKIE as STRAVA_UNOFFICIAL_CRED_SESSION_COOKIE
 from trainiq.connectors.strava_unofficial import PROVIDER as STRAVA_UNOFFICIAL_PROVIDER
 from trainiq.connectors.strava_unofficial import StravaUnofficialConnector
-from trainiq.credentials.store import CredentialStore
+from trainiq.credentials.store import ENV_CREDENTIALS_OUT, CredentialStore
 from trainiq.dedup.detector import run_backfill as run_dedup_backfill
+from trainiq import headless as headless_mod
 from trainiq.export import run_export
 from trainiq.logging_setup import DEFAULT_LOG_DIR, configure, diagnostic_logger, summary_logger
+from trainiq.paths import Paths, platform_defaults, resolve_paths
 from trainiq.safety import RunningFromTrashError, assert_not_running_from_trash
 from trainiq.setup_wizard import run_configure, run_first_time_setup
 from trainiq.storage.schema import open_db
 from trainiq.sync.engine import AuthenticationError, SynchronizationEngine, TransientError
 
-APP_SUPPORT_DIR = Path.home() / "Library" / "Application Support" / "TrainIQ"
-LOG_DIR = DEFAULT_LOG_DIR
-CONFIG_PATH = APP_SUPPORT_DIR / "config.json"
+_DEFAULT_PATHS = platform_defaults()
+APP_SUPPORT_DIR = _DEFAULT_PATHS.db_path.parent
+LOG_DIR = _DEFAULT_PATHS.log_dir
+CONFIG_PATH = _DEFAULT_PATHS.config_path
 
 
 class _Reporter:
@@ -96,6 +113,33 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument(
         "--configure", action="store_true",
         help="Add or reconfigure a connector, even if one or more are already configured.",
+    )
+    parser.add_argument(
+        "--headless", action="store_true",
+        help="Run non-interactively: never prompt, always write status.json, "
+             "exit with a status-specific code (also settable via TRAINIQ_HEADLESS=1).",
+    )
+    parser.add_argument(
+        "--credentials-out", default=None, metavar="PATH",
+        help="Where to write credentials rotated during this run (env backend only); "
+             "also settable via TRAINIQ_CREDENTIALS_OUT.",
+    )
+    parser.add_argument(
+        "--status-json", default=None, metavar="PATH",
+        help="Where to write the machine-readable status report (headless mode); "
+             "also settable via TRAINIQ_STATUS_JSON. Default: <log-dir>/status.json.",
+    )
+    parser.add_argument(
+        "--db-path", default=None, metavar="PATH",
+        help="Database file location; also settable via TRAINIQ_DB_PATH.",
+    )
+    parser.add_argument(
+        "--config-path", default=None, metavar="PATH",
+        help="Config file location; also settable via TRAINIQ_CONFIG_PATH.",
+    )
+    parser.add_argument(
+        "--log-dir", default=None, metavar="PATH",
+        help="Log directory; also settable via TRAINIQ_LOG_DIR.",
     )
     # Issue #71: a subcommand, added alongside (not instead of) the flat
     # bare-`trainiq`/`--configure` shape above — `dest="command"` defaults
@@ -241,19 +285,124 @@ def _run_strava_streams_enrichment(conn, connectors: list[Connector], reporter: 
         reporter.warning(f"{STRAVA_UNOFFICIAL_PROVIDER} streams enrichment stopped: {exc}")
 
 
-def _print_log_locations() -> None:
-    print(f"\nFull logs: {LOG_DIR / 'summary.log'}, {LOG_DIR / 'diagnostic.log'}")
+def _print_log_locations(log_dir: Path) -> None:
+    print(f"\nFull logs: {log_dir / 'summary.log'}, {log_dir / 'diagnostic.log'}")
+
+
+def _seed_config_from_env(config_path: Path) -> str | None:
+    """TRAINIQ_CONFIG_JSON (issue #70): if set and `config_path` doesn't
+    already exist, seeds it from that env var — never overwrites a real
+    config file. Returns an error message if the env var is set but isn't
+    valid JSON, else None. Headless-only (see `_run_headless`): an
+    interactive Mac run has no reason to have this env var set, and
+    gating it this way keeps AC10 (Mac behavior unchanged) trivially true
+    rather than merely tested."""
+    raw = os.environ.get("TRAINIQ_CONFIG_JSON")
+    if not raw or config_path.exists():
+        return None
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        return f"TRAINIQ_CONFIG_JSON is not valid JSON: {exc}"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(json.dumps(parsed, indent=2))
+    return None
+
+
+def _resolve_status_json_path(args: argparse.Namespace, log_dir: Path) -> Path:
+    raw = args.status_json or os.environ.get(headless_mod.ENV_STATUS_JSON) or str(log_dir / "status.json")
+    return Path(raw)
+
+
+def _run_headless(args: argparse.Namespace, db_path: Path, config_path: Path, log_dir: Path, log) -> int:
+    """The `--headless` path: never prompts (no wizard/`--configure`
+    branch is reachable here), always writes `status.json`, and returns
+    one of `trainiq.headless`'s documented exit codes. The whole body is
+    wrapped so an unexpected crash still writes a `failed` status.json
+    instead of leaving a workflow with nothing to inspect (AC6/AC8)."""
+    report = headless_mod.StatusReport(started_at=headless_mod.iso_now())
+    status_path = _resolve_status_json_path(args, log_dir)
+    conn = None
+    try:
+        try:
+            package_path = assert_not_running_from_trash()
+        except RunningFromTrashError as exc:
+            diagnostic_logger().critical(str(exc))
+            report.warnings.append(str(exc))
+            return headless_mod.EXIT_TOTAL_FAILURE
+        log.info(f"Executing package: {package_path}")
+
+        seed_error = _seed_config_from_env(config_path)
+        if seed_error:
+            diagnostic_logger().error(seed_error)
+            report.warnings.append(seed_error)
+            return headless_mod.EXIT_TOTAL_FAILURE
+
+        conn = open_db(db_path)
+        credentials_out = args.credentials_out or os.environ.get(ENV_CREDENTIALS_OUT)
+        credential_store = CredentialStore(conn=conn, credentials_out=credentials_out)
+        reporter = _Reporter(log)
+        connectors = _build_configured_connectors(credential_store, config_path, reporter=reporter)
+        for line in reporter.lines:
+            print(line)
+
+        if not connectors:
+            log.info("Nothing to synchronize.")
+            report.warnings.append("no connectors configured")
+            return headless_mod.EXIT_TOTAL_FAILURE
+
+        athlete_profile = load_athlete_profile(conn)
+        log.info(f"Running synchronization ({len(connectors)} connector(s))")
+        engine = SynchronizationEngine(conn, athlete_profile=athlete_profile)
+        result = engine.run_once(connectors)
+        sync_reporter = _Reporter(log)
+        _log_sync_summary(result, reporter=sync_reporter)
+        _run_strava_streams_enrichment(conn, connectors, reporter=sync_reporter)
+        for line in sync_reporter.lines:
+            print(line)
+        enrichment_warnings = [line for line in sync_reporter.lines if "streams enrichment stopped" in line]
+
+        computed = headless_mod.build_status_report(
+            report.started_at, conn, connectors, result.connector_results,
+            extra_warnings=report.warnings + enrichment_warnings,
+        )
+        report.providers = computed.providers
+        report.warnings = computed.warnings
+        return report.exit_code()
+    except Exception as exc:  # noqa: BLE001 — headless's own outer resilience boundary
+        diagnostic_logger().opt(exception=True).error(f"headless run failed unexpectedly: {exc}")
+        report.warnings.append(f"{type(exc).__name__}: {exc}")
+        return headless_mod.EXIT_TOTAL_FAILURE
+    finally:
+        if conn is not None:
+            conn.close()
+        report.finished_at = headless_mod.iso_now()
+        headless_mod.write_status_report(report, status_path)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
+    headless = args.headless or os.environ.get(headless_mod.ENV_HEADLESS) == "1"
 
     if args.command == "export":
         return _run_export_command(args)
 
-    configure(LOG_DIR)
+    if headless and args.configure:
+        print("FATAL: --headless cannot be combined with --configure", file=sys.stderr)
+        return headless_mod.EXIT_USAGE_ERROR
+
+    run_paths = resolve_paths(
+        args,
+        defaults=Paths(db_path=APP_SUPPORT_DIR / "trainiq.db", config_path=CONFIG_PATH, log_dir=LOG_DIR),
+    )
+    db_path, config_path, log_dir = run_paths.db_path, run_paths.config_path, run_paths.log_dir
+
+    configure(log_dir)
     log = summary_logger()
     log.info("Starting TrainIQ")
+
+    if headless:
+        return _run_headless(args, db_path, config_path, log_dir, log)
 
     try:
         package_path = assert_not_running_from_trash()
@@ -263,21 +412,20 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     log.info(f"Executing package: {package_path}")
 
-    db_path = APP_SUPPORT_DIR / "trainiq.db"
     conn = open_db(db_path)
 
     credential_store = CredentialStore(conn=conn)
     reporter = _Reporter(log)
-    connectors = _build_configured_connectors(credential_store, CONFIG_PATH, reporter=reporter)
+    connectors = _build_configured_connectors(credential_store, config_path, reporter=reporter)
 
     if args.configure:
-        run_configure(credential_store, CONFIG_PATH, status_lines=reporter.lines)
+        run_configure(credential_store, config_path, status_lines=reporter.lines)
         reporter = _Reporter(log)
-        connectors = _build_configured_connectors(credential_store, CONFIG_PATH, reporter=reporter)
+        connectors = _build_configured_connectors(credential_store, config_path, reporter=reporter)
     elif not connectors:
-        run_first_time_setup(credential_store, CONFIG_PATH)
+        run_first_time_setup(credential_store, config_path)
         reporter = _Reporter(log)
-        connectors = _build_configured_connectors(credential_store, CONFIG_PATH, reporter=reporter)
+        connectors = _build_configured_connectors(credential_store, config_path, reporter=reporter)
 
     for line in reporter.lines:
         print(line)
@@ -285,7 +433,7 @@ def main(argv: list[str] | None = None) -> int:
     if not connectors:
         log.info("Nothing to synchronize.")
         print("Nothing to synchronize.")
-        _print_log_locations()
+        _print_log_locations(log_dir)
         conn.close()
         return 0
 
@@ -298,7 +446,7 @@ def main(argv: list[str] | None = None) -> int:
     _run_strava_streams_enrichment(conn, connectors, reporter=sync_reporter)
     for line in sync_reporter.lines:
         print(line)
-    _print_log_locations()
+    _print_log_locations(log_dir)
 
     conn.close()
     return 0

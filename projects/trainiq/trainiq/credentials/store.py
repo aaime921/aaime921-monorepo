@@ -19,17 +19,32 @@ breaking the existing Keychain-only test suite (which instantiates
 `credentials_metadata` stores exclusively non-secret bookkeeping (connected
 flag, last-refreshed timestamp) — the actual secret value never touches
 SQLite, only Keychain, per Milestone 4 §2's explicit separation.
+
+Issue #70 (headless/cloud run): the backend behind get/set/delete is now
+pluggable. `backend` defaults to Keychain (`KeyringBackend`, wrapping the
+exact same module-level `keyring` calls as before — existing tests that
+monkeypatch `keyring.set_keyring()` are unaffected) unless the environment
+variable `TRAINIQ_CREDENTIAL_BACKEND=env` selects `EnvBackend`
+(trainiq/credentials/env_backend.py), which reads
+`TRAINIQ_<PROVIDER>_<TYPE>` instead. Every existing call site and every
+existing test is unaffected (AC2) — `backend`/`credentials_out` are new,
+optional constructor parameters, same precedent as `conn` above.
 """
 
 from __future__ import annotations
 
+import os
 import sqlite3
 from datetime import datetime, timezone
 
 import keyring
 from keyring.errors import PasswordDeleteError
 
+from trainiq.credentials.env_backend import EnvBackend
+
 SERVICE_PREFIX = "trainiq"
+ENV_CREDENTIAL_BACKEND = "TRAINIQ_CREDENTIAL_BACKEND"
+ENV_CREDENTIALS_OUT = "TRAINIQ_CREDENTIALS_OUT"
 
 
 def _key(provider: str, credential_type: str) -> str:
@@ -38,6 +53,35 @@ def _key(provider: str, credential_type: str) -> str:
 
 def _iso_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+class KeyringBackend:
+    """Wraps the pre-#70 Keychain calls verbatim, through the
+    module-level `keyring` import above — not an injected `keyring`
+    instance — so every existing test's `keyring.set_keyring(...)`
+    monkeypatch keeps working exactly as before."""
+
+    def __init__(self, username: str):
+        self._username = username
+
+    def get(self, provider: str, credential_type: str) -> str | None:
+        return keyring.get_password(_key(provider, credential_type), self._username)
+
+    def set(self, provider: str, credential_type: str, value: str) -> None:
+        keyring.set_password(_key(provider, credential_type), self._username, value)
+
+    def delete(self, provider: str, credential_type: str) -> None:
+        try:
+            keyring.delete_password(_key(provider, credential_type), self._username)
+        except PasswordDeleteError:
+            pass  # already absent — deleting a non-existent credential is not an error
+
+
+def _default_backend(username: str, credentials_out: str | None = None):
+    if os.environ.get(ENV_CREDENTIAL_BACKEND) == "env":
+        out_path = credentials_out if credentials_out is not None else os.environ.get(ENV_CREDENTIALS_OUT)
+        return EnvBackend(out_path=out_path)
+    return KeyringBackend(username)
 
 
 class CredentialStore:
@@ -50,7 +94,13 @@ class CredentialStore:
     without touching any other stored secret.
     """
 
-    def __init__(self, username: str = "trainiq-user", conn: sqlite3.Connection | None = None):
+    def __init__(
+        self,
+        username: str = "trainiq-user",
+        conn: sqlite3.Connection | None = None,
+        backend=None,
+        credentials_out: str | None = None,
+    ):
         # keyring addresses secrets by (service_name, username); TrainIQ is
         # single-user, so username is a fixed, documented constant rather
         # than something the caller has to think about.
@@ -59,24 +109,26 @@ class CredentialStore:
         # the non-secret credentials_metadata bookkeeping table. Optional
         # rather than required so existing pure-Keychain tests are untouched.
         self._conn = conn
+        # Issue #70: `backend` lets a caller inject one directly (tests);
+        # `credentials_out` is the simpler case — only overrides where the
+        # env backend writes rotated credentials, everything else about
+        # backend selection is unchanged (`_default_backend`).
+        self._backend = backend if backend is not None else _default_backend(username, credentials_out)
 
     def set(self, provider: str, credential_type: str, value: str) -> None:
         if not value:
             raise ValueError("Refusing to store an empty credential value")
-        keyring.set_password(_key(provider, credential_type), self._username, value)
+        self._backend.set(provider, credential_type, value)
         self._mark_connected(provider)
 
     def get(self, provider: str, credential_type: str) -> str | None:
-        return keyring.get_password(_key(provider, credential_type), self._username)
+        return self._backend.get(provider, credential_type)
 
     def exists(self, provider: str, credential_type: str) -> bool:
         return self.get(provider, credential_type) is not None
 
     def delete(self, provider: str, credential_type: str) -> None:
-        try:
-            keyring.delete_password(_key(provider, credential_type), self._username)
-        except PasswordDeleteError:
-            pass  # already absent — deleting a non-existent credential is not an error
+        self._backend.delete(provider, credential_type)
         self._mark_disconnected(provider)
 
     def rotate(self, provider: str, credential_type: str, new_value: str) -> None:
