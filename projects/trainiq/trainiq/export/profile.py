@@ -24,48 +24,66 @@ _FTP_TEST_MIN_DURATION_S = 15 * 60
 
 
 def _ftp_history(
-    conn: sqlite3.Connection, as_of: date, current_ftp: Optional[int]
+    conn: sqlite3.Connection, as_of: date, primary_ids: set[int]
 ) -> list[list[str]]:
     """Date, avg power and estimated FTP (= round(0.95 * avg power), the
     standard 20-min-test estimate) for every real FTP Test ride, oldest
-    first. Marks the row(s) matching the profile's current FTP and the
-    row with the highest estimate as "current"/"best" (BO, issue #71
-    rework) — this is what closes QA's "FTP value column is always -"
-    gap; the schema still has no stored FTP-test-result column, so the
-    value is derived from avg_power rather than read back."""
+    first, one row per date — filtered to `primary_ids` so a linked
+    Peloton/Strava pair of the same test doesn't produce a duplicate row
+    for the Strava copy (no power data on that side) (issue #79). If two
+    primary rows still share a date, the one with the larger avg_power
+    wins (non-NULL over NULL). The row(s) with the latest date and the
+    row with the highest estimate are marked "latest"/"best" — one row
+    may carry both; rows with no estimate (no avg_power) are not shown,
+    and there is no "current" tag (the profile FTP is shown separately,
+    see `render`)."""
     rows = conn.execute(
-        "SELECT start_time, duration_s, avg_power FROM normalized_activities "
+        "SELECT id, start_time, duration_s, moving_time_s, avg_power FROM normalized_activities "
         "WHERE activity_title IS NOT NULL AND LOWER(activity_title) LIKE '%ftp test%' "
         "ORDER BY start_time"
     ).fetchall()
     as_of_str = as_of.isoformat()
 
-    entries: list[tuple[str, Optional[int], Optional[int]]] = []
+    best_power_by_day: dict[str, Optional[int]] = {}
     for row in rows:
-        if row["duration_s"] is None or row["duration_s"] < _FTP_TEST_MIN_DURATION_S:
+        if row["id"] not in primary_ids:
+            continue
+        duration_s = row["moving_time_s"] if row["moving_time_s"] is not None else row["duration_s"]
+        if duration_s is None or duration_s < _FTP_TEST_MIN_DURATION_S:
             continue
         day = parse_timestamp(row["start_time"]).date().isoformat()
         if day > as_of_str:
             continue
         avg_power = row["avg_power"]
-        estimate = round(avg_power * 0.95) if avg_power is not None else None
-        entries.append((day, avg_power, estimate))
+        current_best = best_power_by_day.get(day)
+        if day not in best_power_by_day or (
+            avg_power is not None and (current_best is None or avg_power > current_best)
+        ):
+            best_power_by_day[day] = avg_power
 
-    estimates = [e for _, _, e in entries if e is not None]
-    best = max(estimates) if estimates else None
+    entries: list[tuple[str, Optional[int], int]] = []
+    for day, avg_power in sorted(best_power_by_day.items()):
+        if avg_power is None:
+            continue
+        entries.append((day, avg_power, round(avg_power * 0.95)))
+    if not entries:
+        return []
+
+    latest_day = entries[-1][0]
+    best_day = max(entries, key=lambda e: (e[2], e[0]))[0]
 
     history = []
     for day, avg_power, estimate in entries:
         tags = []
-        if estimate is not None and estimate == best:
+        if day == latest_day:
+            tags.append("latest")
+        if day == best_day:
             tags.append("best")
-        if estimate is not None and current_ftp is not None and estimate == current_ftp:
-            tags.append("current")
         history.append([day, fmt(avg_power), fmt(estimate), ", ".join(tags)])
     return history
 
 
-def render(conn: sqlite3.Connection, config_path: Path, as_of: date) -> str:
+def render(conn: sqlite3.Connection, config_path: Path, as_of: date, primary_ids: set[int]) -> str:
     profile = load_athlete_profile(conn)
     goal = get_weight_goal(config_path)
 
@@ -90,12 +108,18 @@ def render(conn: sqlite3.Connection, config_path: Path, as_of: date) -> str:
         )
 
     lines += ["", "## FTP history"]
-    current_ftp = profile.ftp_watts if profile is not None else None
-    history = _ftp_history(conn, as_of, current_ftp)
+    history = _ftp_history(conn, as_of, primary_ids)
     if history:
         lines.append(md_table(["Date", "Avg power (W)", "Est. FTP (W)", "Note"], history))
     else:
         lines.append("No qualifying FTP Test rides found.")
+    lines.append("")
+
+    current_ftp = profile.ftp_watts if profile is not None else None
+    if current_ftp is None:
+        lines.append("Current FTP (profile): -")
+    else:
+        lines.append(f"Current FTP (profile): {current_ftp} W")
     lines.append("")
 
     return "\n".join(lines)

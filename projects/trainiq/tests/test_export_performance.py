@@ -56,3 +56,25 @@ def test_render_monthly_pace_trend(db):
 def test_render_no_data_does_not_crash(db):
     md = performance.render(db, primary_ids=set(), as_of=date(2026, 10, 10))
     assert "Best 20-min power: -" in md
+
+
+def test_render_20min_filter_uses_moving_time(db):
+    """issue #79: the 20-min-power proxy should need 20 min of *moving*
+    time — a ride with 20 min elapsed but under 20 min moving must not
+    qualify, and a ride with 20 min moving despite more elapsed time
+    must."""
+    elapsed_only = insert_activity(
+        db, external_id="1", start_time="2026-09-01T07:00:00+00:00",
+        discipline="cycling", duration_s=1200, moving_time_s=900, avg_power=300,
+    )
+    moving_qualifies = insert_activity(
+        db, external_id="2", start_time="2026-09-02T07:00:00+00:00",
+        discipline="cycling", duration_s=1500, moving_time_s=1200, avg_power=250,
+    )
+
+    md = performance.render(
+        db, primary_ids={elapsed_only, moving_qualifies}, as_of=date(2026, 10, 10)
+    )
+
+    assert "250 W" in md
+    assert "300 W" not in md

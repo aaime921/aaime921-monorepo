@@ -11,7 +11,7 @@ import json
 import sqlite3
 from datetime import date, datetime, timedelta, timezone
 
-from trainiq.export.data import load_activities, sport_of
+from trainiq.export.data import effective_duration_s, load_activities, sport_of
 from trainiq.export.fmt import fmt, fmt_pace, md_table
 
 WINDOW_DAYS = 30
@@ -37,7 +37,7 @@ def render(conn: sqlite3.Connection, primary_ids: set[int], as_of: date) -> tupl
 
     headers = [
         "Date", "Sport", "Class title", "Instructor", "Class type",
-        "Duration", "Distance (km)", "Avg HR", "Avg power", "Load", "Pace",
+        "Duration (moving)", "Distance (km)", "Avg HR", "Avg power", "Load", "Pace",
     ]
     rows = []
     records = []
@@ -51,7 +51,7 @@ def render(conn: sqlite3.Connection, primary_ids: set[int], as_of: date) -> tupl
             a.activity_title or "-",
             a.instructor_name or "-",
             a.class_type or "-",
-            fmt(a.duration_s / 60, 0) + " min",
+            fmt(effective_duration_s(a) / 60, 0) + " min",
             fmt(distance_km, 2),
             fmt(a.avg_hr, 0),
             fmt(a.avg_power, 0),
@@ -64,7 +64,7 @@ def render(conn: sqlite3.Connection, primary_ids: set[int], as_of: date) -> tupl
             "activity_title": a.activity_title,
             "instructor_name": a.instructor_name,
             "class_type": a.class_type,
-            "duration_s": a.duration_s,
+            "duration_s": effective_duration_s(a),
             "distance_m": a.distance_m,
             "avg_hr": a.avg_hr,
             "avg_power": a.avg_power,

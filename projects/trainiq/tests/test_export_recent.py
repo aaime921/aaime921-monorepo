@@ -92,6 +92,34 @@ def test_render_newest_first_and_truncation(db):
     assert "Truncated: 4 older rows omitted." in md
 
 
+def test_render_uses_moving_time_when_present(db):
+    """issue #79: a walk left running (elapsed 537 min, moving 86 min) must
+    show the moving time, not the elapsed time, in both the table and the
+    JSON `duration_s` field."""
+    activity_id = insert_activity(
+        db, external_id="1", start_time="2026-09-26T07:00:00+00:00",
+        discipline="other", sport_type_raw="Walk", duration_s=537 * 60, moving_time_s=86 * 60,
+    )
+
+    md, js = recent.render(db, primary_ids={activity_id}, as_of=date(2026, 10, 10))
+
+    assert "86 min" in md
+    assert "537 min" not in md
+    assert json.loads(js)["activities"][0]["duration_s"] == 86 * 60
+
+
+def test_render_falls_back_to_duration_when_moving_time_missing(db):
+    activity_id = insert_activity(
+        db, external_id="1", start_time="2026-10-05T07:00:00+00:00",
+        discipline="running", duration_s=1800, moving_time_s=None,
+    )
+
+    md, js = recent.render(db, primary_ids={activity_id}, as_of=date(2026, 10, 10))
+
+    assert "30 min" in md
+    assert json.loads(js)["activities"][0]["duration_s"] == 1800
+
+
 def test_render_excludes_dedup_secondary_side(db):
     primary = insert_activity(
         db, external_id="1", start_time="2026-10-05T07:00:00+00:00", discipline="cycling",

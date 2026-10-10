@@ -74,6 +74,13 @@ def parse_timestamp(raw: str) -> datetime:
     return parsed.astimezone(timezone.utc)
 
 
+def effective_duration_s(activity: Activity) -> int:
+    """`moving_time_s` when present (non-null), else `duration_s` — used
+    everywhere the export shows or sums an activity's duration (issue #79):
+    elapsed time overstates e.g. a walk with long pauses."""
+    return activity.moving_time_s if activity.moving_time_s is not None else activity.duration_s
+
+
 def load_activities(
     conn: sqlite3.Connection,
     primary_ids: set[int],

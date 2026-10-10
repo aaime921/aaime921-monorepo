@@ -12,7 +12,7 @@ from __future__ import annotations
 import sqlite3
 from datetime import date
 
-from trainiq.export.data import load_activities, sport_of
+from trainiq.export.data import effective_duration_s, load_activities, sport_of
 from trainiq.export.fmt import fmt, fmt_pace, md_table
 
 TWENTY_MIN_S = 1200
@@ -24,7 +24,7 @@ def render(conn: sqlite3.Connection, primary_ids: set[int], as_of: date) -> str:
 
     cycling_candidates = [
         a for a in activities
-        if a.discipline == "cycling" and a.duration_s >= TWENTY_MIN_S and a.avg_power is not None
+        if a.discipline == "cycling" and effective_duration_s(a) >= TWENTY_MIN_S and a.avg_power is not None
     ]
     best_20min = max(cycling_candidates, key=lambda a: a.avg_power, default=None)
 
