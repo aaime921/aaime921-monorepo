@@ -1,0 +1,21 @@
+name: Agent-pipeline request
+description: New feature, bug or change for agent-pipeline. Starts the BA routine automatically.
+labels: ["project:agent-pipeline", "stage:ba"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What do you need?
+      description: The problem or the outcome you want, in plain words.
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why / context
+      description: Evidence, examples, links, data (no secrets or cookies).
+  - type: textarea
+    id: done
+    attributes:
+      label: Done when
+      description: How you'll know it works (the BA turns this into acceptance criteria).
