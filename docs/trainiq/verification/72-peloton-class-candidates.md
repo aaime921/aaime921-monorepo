@@ -34,3 +34,25 @@ Class tests (`test_export_classes.py`, `test_peloton_class_catalog.py`, `test_ex
 
 Same unverified live items as #81 (`data[].id` vs `provider_class_id`; `metadata_mappings` shape).
 BO must merge only one of #81 / #82 and close the other (they overlap and will conflict).
+
+---
+
+# Addendum 2: PR #82 rework (list-shaped `metadata_mappings`)
+
+`pytest tests/` in `projects/trainiq` on #82 head 7a2e88b (clean venv): 789 passed, 10 deselected
+(`test_peloton_csv_import.py`, needs a BO-local CSV; pre-existing). Class tests: 42 passed.
+
+| Rework AC | Result | Reason |
+|---|---|---|
+| Parse `class_types`/`instructors` as lists; id->name lookups | Pass | `_build_lookups()` in `classes.py` |
+| Filter to `fitness_discipline == "cycling"` and `is_active` | Pass | filter test with inactive/other-discipline noise |
+| Fixtures/tests use real list shapes | Pass | dict shape now rejected (regression test) |
+| Integration-style test: real-shaped fake catalog gives non-empty md for "Power Zone" | Pass | present in `test_export_classes.py` |
+| QA run against real-shaped data | Pass (offline only) | real-shaped fixtures only; no live account access from QA |
+
+Not verified, needs BO live re-run of `trainiq export`:
+- Archived `data[].id` equals stored `provider_class_id` (else every row shows `new`).
+- Class-type matching uses the catalog `name` exactly (case-insensitive). The live capture shows `"name": "Warm Up Ride"`
+  and also a `display_name`. If history tags are display-style ("Warm Up", "Power Zone"), they will not match
+  `name` ("Warm Up Ride") and will be listed as unmatched. Probe: `_match_class_type_id("Warm Up", ...)` returns None
+  for `name="Warm Up Ride", display_name="Warm Up"`. Check which form the history `class_type` tags use.
