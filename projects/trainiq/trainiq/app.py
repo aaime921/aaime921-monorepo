@@ -156,7 +156,29 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         "--as-of", type=str, default=None,
         help="YYYY-MM-DD; defaults to the latest data date (never wall-clock \"now\").",
     )
+    export_parser.add_argument(
+        "--no-classes", action="store_true",
+        help="Skip the Peloton class-candidates lookup (issue #72); "
+             "peloton_classes.md/.json are still written, marked unavailable.",
+    )
     return parser.parse_args(argv)
+
+
+def _authenticate_class_catalog(conn, config_path: Path) -> "PelotonConnector | None":
+    """Issue #72: reuses the existing, already-configured PelotonConnector
+    — no new auth path. A missing credential or a failed authenticate()
+    call both return None here without raising (same as every path through
+    `authenticate()` itself), which `trainiq.export.classes.build` turns
+    into "class catalog unavailable" (AC 7) rather than failing the whole
+    export."""
+    credential_store = CredentialStore(conn=conn)
+    try:
+        connector = PelotonConnector(credential_store)
+        if connector.authenticate():
+            return connector
+    except Exception:  # noqa: BLE001 - never fail the export over the class catalog
+        pass
+    return None
 
 
 def _run_export_command(args: argparse.Namespace) -> int:
@@ -167,7 +189,8 @@ def _run_export_command(args: argparse.Namespace) -> int:
 
     conn = open_db(db_path)
     try:
-        written = run_export(conn, args.out, config_path, as_of=as_of)
+        catalog = None if args.no_classes else _authenticate_class_catalog(conn, config_path)
+        written = run_export(conn, args.out, config_path, as_of=as_of, catalog=catalog)
     finally:
         conn.close()
 

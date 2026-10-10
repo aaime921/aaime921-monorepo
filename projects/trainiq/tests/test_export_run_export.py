@@ -15,6 +15,7 @@ from tests.conftest import insert_activity, insert_weigh_in
 _EXPECTED_FILES = {
     "profile.md", "recent.md", "recent.json", "last_done.md",
     "load.md", "load.json", "weight.md", "weight.json", "performance.md",
+    "peloton_classes.md", "peloton_classes.json",
 }
 
 
@@ -134,6 +135,42 @@ def test_run_export_succeeds_against_real_shaped_mixed_timestamp_formats(db, tmp
     assert {p.name for p in written} == _EXPECTED_FILES
     for path in written:
         assert path.exists()
+
+
+def test_run_export_wires_catalog_into_peloton_classes(db, tmp_path: Path):
+    """Issue #72: `catalog` flows from `run_export` all the way through to
+    `peloton_classes.md`/`.json` (a `catalog=None` default is already
+    covered by every other test in this file, which don't pass one)."""
+    activity_id = insert_activity(
+        db, provider="peloton", external_id="p1", start_time="2026-09-01T07:00:00+00:00",
+        discipline="cycling", class_type="Power Zone", provider_class_id="ride-done",
+    )
+    db.commit()
+
+    class _FakeCatalog:
+        def fetch_ride_metadata_mappings(self):
+            return {"class_types": [{"id": "ct1", "name": "Power Zone"}], "instructors": []}
+
+        def fetch_archived_classes(self, class_type_id, duration_s, limit=8):
+            return {"data": [{"id": "ride-done", "title": "Power Zone Ride", "instructor_id": None,
+                               "difficulty_estimate": 7.0, "original_air_time": 1760000000}], "total": 1}
+
+    written = run_export(
+        db, tmp_path / "out", tmp_path / "config.json", as_of=date(2026, 10, 10), catalog=_FakeCatalog(),
+    )
+
+    md = next(p for p in written if p.name == "peloton_classes.md").read_text()
+    assert "done before (2026-09-01)" in md
+    assert activity_id  # the seeded row is what makes "Power Zone" a used type
+
+
+def test_run_export_default_catalog_none_marks_classes_unavailable(db, tmp_path: Path):
+    _seed_small_dataset(db)
+
+    written = run_export(db, tmp_path / "out", tmp_path / "config.json", as_of=date(2026, 10, 10))
+
+    md = next(p for p in written if p.name == "peloton_classes.md").read_text()
+    assert "class catalog unavailable" in md
 
 
 def test_run_export_each_file_is_under_50kb_on_a_large_dataset(db, tmp_path: Path):

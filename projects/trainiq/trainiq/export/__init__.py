@@ -25,7 +25,8 @@ from sqlite3 import Connection
 from typing import Optional
 
 from trainiq.dedup.detector import primary_activity_ids
-from trainiq.export import last_done, load, performance, profile, recent, weight
+from trainiq.export import classes, last_done, load, performance, profile, recent, weight
+from trainiq.export.classes import ClassCatalog
 from trainiq.export.data import resolve_as_of
 
 
@@ -34,6 +35,7 @@ def run_export(
     out_dir: Path,
     config_path: Path,
     as_of: Optional[date] = None,
+    catalog: Optional[ClassCatalog] = None,
 ) -> list[Path]:
     """Writes all six Markdown files (plus JSON companions for recent/load/
     weight) into `out_dir`, creating it if absent. Returns the paths
@@ -62,6 +64,22 @@ def run_export(
     written.append(_write(out_dir, "weight.json", weight_json))
 
     written.append(_write(out_dir, "performance.md", performance.render(conn, primary_ids, resolved_as_of)))
+
+    # Issue #72: always written, last, after every #71 file above — a
+    # network/catalog failure (including `catalog=None`) degrades to
+    # "class catalog unavailable" inside `classes.build`, so this must
+    # never prevent any other file from being written (AC 7). The
+    # `except Exception` is a second line of defense for anything build()
+    # itself didn't anticipate.
+    try:
+        classes_data = classes.build(conn, primary_ids, catalog, resolved_as_of)
+    except Exception:  # noqa: BLE001 - an export must never fail over the class catalog
+        classes_data = {
+            "as_of": resolved_as_of.isoformat(), "status": "unavailable",
+            "reason": "class catalog unavailable", "sections": [], "unmatched_tags": [], "not_shown": [],
+        }
+    written.append(_write(out_dir, "peloton_classes.md", classes.render_md(classes_data)))
+    written.append(_write(out_dir, "peloton_classes.json", classes.to_json(classes_data)))
 
     return written
 

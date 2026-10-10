@@ -35,12 +35,18 @@ class Activity:
     class_type: Optional[str]
     sport_type_raw: Optional[str]
     avg_pace_s_per_km: Optional[float]
+    # Issue #72: the resolved, stable ride id (#58) a class workout links
+    # to — needed to mark peloton_classes.md rows done-before. Defaulted
+    # so every existing call site that builds an Activity directly (tests)
+    # is unaffected.
+    provider_class_id: Optional[str] = None
 
 
 _ACTIVITY_COLUMNS = (
     "id", "provider", "start_time", "duration_s", "moving_time_s", "discipline",
     "distance_m", "avg_hr", "avg_power", "training_load", "training_load_method",
     "activity_title", "instructor_name", "class_type", "sport_type_raw", "avg_pace_s_per_km",
+    "provider_class_id",
 )
 
 
@@ -115,6 +121,7 @@ def load_activities(
                 class_type=row["class_type"],
                 sport_type_raw=row["sport_type_raw"],
                 avg_pace_s_per_km=row["avg_pace_s_per_km"],
+                provider_class_id=row["provider_class_id"],
             )
         )
 

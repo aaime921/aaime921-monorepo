@@ -744,3 +744,42 @@ def test_main_export_command_respects_as_of(isolated_app_dirs, tmp_path):
 
     assert exit_code == 0
     assert "As of: 2026-01-01" in (out_dir / "profile.md").read_text()
+
+
+# --- `export --no-classes` (issue #72) --------------------------------------
+
+def test_parse_args_export_no_classes_defaults_false():
+    args = _parse_args(["export", "--out", "/tmp/somewhere"])
+    assert args.no_classes is False
+
+
+def test_parse_args_export_parses_no_classes():
+    args = _parse_args(["export", "--out", "/tmp/somewhere", "--no-classes"])
+    assert args.no_classes is True
+
+
+def test_main_export_writes_peloton_classes_unavailable_with_no_peloton_credentials(isolated_app_dirs, tmp_path):
+    """No Peloton credentials configured (the default, untouched test
+    state) -> `_authenticate_class_catalog` returns None without any
+    network call -> the file still writes, stating unavailable (AC 7)."""
+    out_dir = tmp_path / "coach_export"
+
+    exit_code = main(["export", "--out", str(out_dir)])
+
+    assert exit_code == 0
+    assert "class catalog unavailable" in (out_dir / "peloton_classes.md").read_text()
+
+
+def test_main_export_no_classes_flag_skips_catalog_authentication(isolated_app_dirs, tmp_path, monkeypatch):
+    import trainiq.app as app_module
+
+    def _fail_if_called(*args, **kwargs):
+        raise AssertionError("--no-classes must skip _authenticate_class_catalog() entirely")
+
+    monkeypatch.setattr(app_module, "_authenticate_class_catalog", _fail_if_called)
+    out_dir = tmp_path / "coach_export"
+
+    exit_code = main(["export", "--out", str(out_dir), "--no-classes"])
+
+    assert exit_code == 0
+    assert "class catalog unavailable" in (out_dir / "peloton_classes.md").read_text()

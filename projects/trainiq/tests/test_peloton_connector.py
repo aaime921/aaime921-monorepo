@@ -2034,3 +2034,97 @@ def test_degraded_connector_escalates_to_recovery_required_after_ten_days(db, cr
     assert final_state == "RecoveryRequired"
     # Real recovery instructions must now be available, matching Feature 3.2.
     assert "Bearer Token" in connector.request_manual_recovery()
+
+
+# --- Issue #72: fetch_ride_metadata_mappings() / fetch_archived_classes() --
+
+def test_fetch_ride_metadata_mappings_returns_parsed_body(credential_store):
+    fake = FakePelotonSession()
+    fake.script_get_response(FakeResponse(200, {
+        "class_types": [{"id": "ct1", "name": "Power Zone"}, {"id": "ct2", "name": "Low Impact"}],
+        "instructors": [{"id": "i1", "name": "Robin Arzon"}],
+    }))
+    connector = PelotonConnector(credential_store, session=fake)
+    connector._active_auth_header = {"Cookie": "peloton_session_id=x"}
+
+    result = connector.fetch_ride_metadata_mappings()
+
+    assert result["class_types"][0]["name"] == "Power Zone"
+    assert fake.get_calls[0]["url"].endswith("/api/ride/metadata_mappings")
+
+
+def test_fetch_ride_metadata_mappings_404_returns_none(credential_store):
+    fake = FakePelotonSession()
+    fake.script_get_response(FakeResponse(404, {}))
+    connector = PelotonConnector(credential_store, session=fake)
+    connector._active_auth_header = {"Cookie": "peloton_session_id=x"}
+
+    assert connector.fetch_ride_metadata_mappings() is None
+
+
+def test_fetch_ride_metadata_mappings_before_authenticate_raises(credential_store):
+    fake = FakePelotonSession()
+    connector = PelotonConnector(credential_store, session=fake)
+
+    with pytest.raises(AuthenticationError):
+        connector.fetch_ride_metadata_mappings()
+
+
+def test_fetch_ride_metadata_mappings_rate_limited_raises_transient_error(credential_store):
+    fake = FakePelotonSession()
+    fake.script_get_response(FakeResponse(429, {}, headers={"Retry-After": "60"}))
+    connector = PelotonConnector(credential_store, session=fake)
+    connector._active_auth_header = {"Cookie": "peloton_session_id=x"}
+
+    with pytest.raises(TransientError) as excinfo:
+        connector.fetch_ride_metadata_mappings()
+    assert excinfo.value.retry_after_s == 60.0
+
+
+def test_fetch_archived_classes_returns_data_and_total(credential_store):
+    fake = FakePelotonSession()
+    fake.script_get_response(FakeResponse(200, {
+        "data": [{"id": "ride-1", "title": "45 min Power Zone", "instructor_id": "i1",
+                  "difficulty_estimate": 8.4, "original_air_time": 1760000000}],
+        "total": 391,
+    }))
+    connector = PelotonConnector(credential_store, session=fake)
+    connector._active_auth_header = {"Cookie": "peloton_session_id=x"}
+
+    result = connector.fetch_archived_classes("ct1", 2700, limit=8)
+
+    assert result["total"] == 391
+    assert result["data"][0]["id"] == "ride-1"
+    call = fake.get_calls[0]
+    assert call["url"].endswith("/api/v2/ride/archived")
+    assert call["params"] == {
+        "browse_category": "cycling", "class_type_id": "ct1", "duration": 2700,
+        "sort_by": "original_air_time", "desc": "true", "limit": 8, "page": 0,
+    }
+
+
+def test_fetch_archived_classes_404_returns_none(credential_store):
+    fake = FakePelotonSession()
+    fake.script_get_response(FakeResponse(404, {}))
+    connector = PelotonConnector(credential_store, session=fake)
+    connector._active_auth_header = {"Cookie": "peloton_session_id=x"}
+
+    assert connector.fetch_archived_classes("ct1", 1200, limit=8) is None
+
+
+def test_fetch_archived_classes_before_authenticate_raises(credential_store):
+    fake = FakePelotonSession()
+    connector = PelotonConnector(credential_store, session=fake)
+
+    with pytest.raises(AuthenticationError):
+        connector.fetch_archived_classes("ct1", 1200, limit=8)
+
+
+def test_fetch_archived_classes_auth_rejected_raises_authentication_error(credential_store):
+    fake = FakePelotonSession()
+    fake.script_get_response(FakeResponse(401, {}))
+    connector = PelotonConnector(credential_store, session=fake)
+    connector._active_auth_header = {"Cookie": "peloton_session_id=x"}
+
+    with pytest.raises(AuthenticationError):
+        connector.fetch_archived_classes("ct1", 1200, limit=8)

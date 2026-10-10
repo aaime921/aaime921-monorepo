@@ -405,6 +405,15 @@ PERFORMANCE_FETCH_STATUS_OK = "ok"          # attempted, response parsed
                                              # a sparse but well-formed response)
 PERFORMANCE_FETCH_STATUS_FAILED = "failed"  # attempted, fetch itself failed
 
+# Issue #72 (coach export, class candidates): two read-only catalog lookups
+# used by trainiq/export/classes.py, live-verified against the BO's real
+# account (2026-10-10). Both reuse _authenticated_get(...,
+# not_found_returns_none=True) unchanged — same auth header, Retry-After/429
+# -> TransientError, 401/403 -> AuthenticationError, and rate limiting as
+# every other call in this connector; no new HTTP code path.
+METADATA_MAPPINGS_ENDPOINT = "/api/ride/metadata_mappings"
+ARCHIVED_RIDES_ENDPOINT = "/api/v2/ride/archived"
+
 
 def _coerce_int(value: Any) -> int | None:
     """metrics[].average_value/max_value can come back as a float (e.g.
@@ -891,6 +900,45 @@ class PelotonConnector(Connector):
             raise AuthenticationError(f"{PROVIDER}: fetch_class_details() called before a successful authenticate()")
         return self._authenticated_get(
             f"{self._base_url}{RIDE_DETAIL_ENDPOINT_TEMPLATE.format(ride_id=ride_id)}",
+            not_found_returns_none=True,
+        )
+
+    def fetch_ride_metadata_mappings(self) -> dict[str, Any] | None:
+        """Issue #72: `GET /api/ride/metadata_mappings` — `class_types`
+        (id<->name) and `instructors` (id->name), live-verified against the
+        BO's real account (2026-10-10). Returns None for a confirmed 404,
+        same contract as fetch_class_details()/fetch_class_session() above.
+        Raises TransientError for 429/5xx (ADR-037, honors Retry-After) and
+        AuthenticationError for 401/403 — the caller (trainiq/export/
+        classes.py) stops issuing further calls on either, per the
+        architecture doc's failure-handling rules."""
+        if self._active_auth_header is None:
+            raise AuthenticationError(f"{PROVIDER}: fetch_ride_metadata_mappings() called before a successful authenticate()")
+        return self._authenticated_get(
+            f"{self._base_url}{METADATA_MAPPINGS_ENDPOINT}",
+            not_found_returns_none=True,
+        )
+
+    def fetch_archived_classes(self, class_type_id: str, duration_s: int, limit: int = 8) -> dict[str, Any] | None:
+        """Issue #72: `GET /api/v2/ride/archived`, cycling only
+        (`browse_category=cycling`, BO decision), newest first
+        (`sort_by=original_air_time&desc=true`). Returns `{"data": [...],
+        "total": ...}` (live-verified shape) or None for a confirmed 404.
+        Raises TransientError/AuthenticationError exactly like every other
+        authenticated_get call in this connector."""
+        if self._active_auth_header is None:
+            raise AuthenticationError(f"{PROVIDER}: fetch_archived_classes() called before a successful authenticate()")
+        return self._authenticated_get(
+            f"{self._base_url}{ARCHIVED_RIDES_ENDPOINT}",
+            params={
+                "browse_category": "cycling",
+                "class_type_id": class_type_id,
+                "duration": duration_s,
+                "sort_by": "original_air_time",
+                "desc": "true",
+                "limit": limit,
+                "page": 0,
+            },
             not_found_returns_none=True,
         )
 

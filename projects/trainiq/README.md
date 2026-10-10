@@ -69,11 +69,22 @@ See `scripts/benchmark.py`'s module docstring for what these numbers do and do n
     trainiq export --out <dir>
 
 Writes `profile.md`, `recent.md`, `last_done.md`, `load.md`, `weight.md`,
-`performance.md` (plus JSON companions for `recent`/`load`/`weight`) into
-`<dir>`, creating it if absent. Deterministic for a given database:
-`--as-of YYYY-MM-DD` overrides the default anchor date (the latest
-activity or weigh-in date), never wall-clock "now". `--db-path`/
-`--config-path` default the same way the re-normalize scripts do.
+`performance.md`, `peloton_classes.md` (plus JSON companions for
+`recent`/`load`/`weight`/`peloton_classes`) into `<dir>`, creating it if
+absent. Deterministic for a given database: `--as-of YYYY-MM-DD` overrides
+the default anchor date (the latest activity or weigh-in date), never
+wall-clock "now". `--db-path`/`--config-path` default the same way the
+re-normalize scripts do.
+
+`peloton_classes.md`/`.json` (issue #72) list real Peloton bike classes —
+newest ~8 per duration (20/30/45/60 min) x class type you've actually
+ridden — each marked done-before or new, for the coach to recommend one
+for the time available. Authenticates the already-configured Peloton
+connector (no new credentials needed) and makes one metadata call plus at
+most one search call per duration x class type. `--no-classes` skips the
+lookup entirely; the file is still written, stating "class catalog
+unavailable" (same as when authentication fails or Peloton isn't
+configured) rather than ever failing the export.
 
 The weight-loss goal (`weight.md`/`profile.md`) is not in the database —
 set it once in `config.json` (same file as Eufy's `device_id`):
