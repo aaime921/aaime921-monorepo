@@ -1,0 +1,269 @@
+name: TrainIQ sync
+
+# Issue #73. Lives in the monorepo (projects/trainiq/deploy/trainiq-data/);
+# the BO copies this file into aaime921/trainiq-data's .github/workflows/
+# (install steps: README.md in this folder). Everything this workflow
+# calls out to (scripts/, trainiq itself) is read from a monorepo checkout
+# made at runtime (the `.mono` step below), so only this file itself needs
+# re-copying when its own content changes.
+
+"on":
+  schedule:
+    # Offset off :00 on purpose (architecture doc, "Free tier").
+    - cron: "17 5 * * *"
+  workflow_dispatch: {}
+  issues:
+    types: [opened]
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: trainiq-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    # Keep in sync with scripts/refresh_filter.py's should_run(): schedule
+    # and workflow_dispatch always run; an `issues` event runs only for a
+    # `refresh` title/label opened by someone with write access. Any other
+    # issue starts no job. test_deploy_trainiq_data.py asserts both agree
+    # on the same fixture payloads.
+    if: >
+      github.event_name == 'schedule' ||
+      github.event_name == 'workflow_dispatch' ||
+      (
+        github.event_name == 'issues' &&
+        (
+          github.event.issue.title == 'refresh' ||
+          contains(github.event.issue.labels.*.name, 'refresh')
+        ) &&
+        contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.issue.author_association)
+      )
+    runs-on: ubuntu-latest
+    env:
+      TRAINIQ_CREDENTIAL_BACKEND: env
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout trainiq-data
+        uses: actions/checkout@v4
+
+      - name: Checkout monorepo (read-only)
+        uses: actions/checkout@v4
+        with:
+          repository: aaime921/aaime921-monorepo
+          token: ${{ secrets.MONOREPO_READ_TOKEN }}
+          path: .mono
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install TrainIQ
+        run: pip install ./.mono/projects/trainiq
+
+      - name: Restore prior DB and credentials
+        run: |
+          set -e
+          mkdir -p state
+          if gh release view data --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            if ! gh release download data --repo "${{ github.repository }}" --pattern 'trainiq.db' --dir state --clobber; then
+              echo "::error::release 'data' exists but trainiq.db could not be downloaded; aborting rather than risk overwriting it with an empty DB." >&2
+              exit 1
+            fi
+            gh release download data --repo "${{ github.repository }}" --pattern 'creds.enc' --dir state --clobber || true
+          fi
+
+      - name: Decrypt stored credentials
+        if: hashFiles('state/creds.enc') != ''
+        env:
+          TRAINIQ_STATE_PASSPHRASE: ${{ secrets.TRAINIQ_STATE_PASSPHRASE }}
+        run: |
+          openssl enc -d -aes-256-cbc -pbkdf2 -pass env:TRAINIQ_STATE_PASSPHRASE \
+            -in state/creds.enc -out state/creds.json
+
+      - name: Merge credentials
+        env:
+          TRAINIQ_STRAVA_REFRESH_TOKEN: ${{ secrets.TRAINIQ_STRAVA_REFRESH_TOKEN }}
+          TRAINIQ_STRAVA_ACCESS_TOKEN: ${{ secrets.TRAINIQ_STRAVA_ACCESS_TOKEN }}
+          TRAINIQ_STRAVA_EXPIRES_AT: ${{ secrets.TRAINIQ_STRAVA_EXPIRES_AT }}
+          TRAINIQ_STRAVA_UNOFFICIAL_SESSION_COOKIE: ${{ secrets.TRAINIQ_STRAVA_UNOFFICIAL_SESSION_COOKIE }}
+          TRAINIQ_STRAVA_UNOFFICIAL_SESSION_OBTAINED_AT: ${{ secrets.TRAINIQ_STRAVA_UNOFFICIAL_SESSION_OBTAINED_AT }}
+          TRAINIQ_STRAVA_UNOFFICIAL_SESSION_EXPIRES_AT: ${{ secrets.TRAINIQ_STRAVA_UNOFFICIAL_SESSION_EXPIRES_AT }}
+          TRAINIQ_PELOTON_EMAIL: ${{ secrets.TRAINIQ_PELOTON_EMAIL }}
+          TRAINIQ_PELOTON_PASSWORD: ${{ secrets.TRAINIQ_PELOTON_PASSWORD }}
+          TRAINIQ_PELOTON_SESSION_ID: ${{ secrets.TRAINIQ_PELOTON_SESSION_ID }}
+          TRAINIQ_PELOTON_SESSION_EXPIRES_AT: ${{ secrets.TRAINIQ_PELOTON_SESSION_EXPIRES_AT }}
+          TRAINIQ_PELOTON_MANUAL_BEARER_TOKEN: ${{ secrets.TRAINIQ_PELOTON_MANUAL_BEARER_TOKEN }}
+          TRAINIQ_PELOTON_OAUTH_ACCESS_TOKEN: ${{ secrets.TRAINIQ_PELOTON_OAUTH_ACCESS_TOKEN }}
+          TRAINIQ_PELOTON_OAUTH_REFRESH_TOKEN: ${{ secrets.TRAINIQ_PELOTON_OAUTH_REFRESH_TOKEN }}
+          TRAINIQ_PELOTON_OAUTH_EXPIRES_AT: ${{ secrets.TRAINIQ_PELOTON_OAUTH_EXPIRES_AT }}
+          TRAINIQ_EUFY_EMAIL: ${{ secrets.TRAINIQ_EUFY_EMAIL }}
+          TRAINIQ_EUFY_PASSWORD: ${{ secrets.TRAINIQ_EUFY_PASSWORD }}
+          TRAINIQ_EUFY_ACCESS_TOKEN: ${{ secrets.TRAINIQ_EUFY_ACCESS_TOKEN }}
+          TRAINIQ_EUFY_REFRESH_TOKEN: ${{ secrets.TRAINIQ_EUFY_REFRESH_TOKEN }}
+          TRAINIQ_EUFY_EXPIRES_AT: ${{ secrets.TRAINIQ_EUFY_EXPIRES_AT }}
+        run: |
+          STORED_ARG=""
+          if [ -f state/creds.json ]; then STORED_ARG="--stored state/creds.json"; fi
+          python .mono/projects/trainiq/deploy/trainiq-data/scripts/merge_credentials.py --mode merge $STORED_ARG
+          rm -f state/creds.json
+
+      - name: Run headless sync
+        id: sync
+        env:
+          TRAINIQ_CONFIG_JSON: ${{ secrets.TRAINIQ_CONFIG_JSON }}
+        run: |
+          set +e
+          trainiq --headless \
+            --db-path state/trainiq.db \
+            --config-path state/config.json \
+            --credentials-out state/creds_out.json \
+            --status-json state/status.json \
+            --log-dir state/logs
+          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+
+      - name: Export coach data
+        if: steps.sync.outputs.exit_code == '0' || steps.sync.outputs.exit_code == '3'
+        run: |
+          trainiq export --out coach --db-path state/trainiq.db --config-path state/config.json
+
+      - name: Render status.md
+        if: always()
+        run: |
+          mkdir -p coach
+          python .mono/projects/trainiq/deploy/trainiq-data/scripts/render_status.py \
+            --status-json state/status.json \
+            --state-json coach/state.json \
+            --exit-code "${{ steps.sync.outputs.exit_code }}" \
+            --out coach/status.md
+
+      - name: Seal rotated credentials
+        if: always()
+        # Re-declares the raw secrets (step-level env wins over the merged
+        # values the "Merge credentials" step already wrote to
+        # $GITHUB_ENV): build_stored() must hash the secret this run
+        # actually started with, not whatever stored/merged value ended up
+        # exported to `trainiq`, or next run could never detect a BO edit.
+        env:
+          TRAINIQ_STRAVA_REFRESH_TOKEN: ${{ secrets.TRAINIQ_STRAVA_REFRESH_TOKEN }}
+          TRAINIQ_STRAVA_ACCESS_TOKEN: ${{ secrets.TRAINIQ_STRAVA_ACCESS_TOKEN }}
+          TRAINIQ_STRAVA_EXPIRES_AT: ${{ secrets.TRAINIQ_STRAVA_EXPIRES_AT }}
+          TRAINIQ_STRAVA_UNOFFICIAL_SESSION_COOKIE: ${{ secrets.TRAINIQ_STRAVA_UNOFFICIAL_SESSION_COOKIE }}
+          TRAINIQ_STRAVA_UNOFFICIAL_SESSION_OBTAINED_AT: ${{ secrets.TRAINIQ_STRAVA_UNOFFICIAL_SESSION_OBTAINED_AT }}
+          TRAINIQ_STRAVA_UNOFFICIAL_SESSION_EXPIRES_AT: ${{ secrets.TRAINIQ_STRAVA_UNOFFICIAL_SESSION_EXPIRES_AT }}
+          TRAINIQ_PELOTON_EMAIL: ${{ secrets.TRAINIQ_PELOTON_EMAIL }}
+          TRAINIQ_PELOTON_PASSWORD: ${{ secrets.TRAINIQ_PELOTON_PASSWORD }}
+          TRAINIQ_PELOTON_SESSION_ID: ${{ secrets.TRAINIQ_PELOTON_SESSION_ID }}
+          TRAINIQ_PELOTON_SESSION_EXPIRES_AT: ${{ secrets.TRAINIQ_PELOTON_SESSION_EXPIRES_AT }}
+          TRAINIQ_PELOTON_MANUAL_BEARER_TOKEN: ${{ secrets.TRAINIQ_PELOTON_MANUAL_BEARER_TOKEN }}
+          TRAINIQ_PELOTON_OAUTH_ACCESS_TOKEN: ${{ secrets.TRAINIQ_PELOTON_OAUTH_ACCESS_TOKEN }}
+          TRAINIQ_PELOTON_OAUTH_REFRESH_TOKEN: ${{ secrets.TRAINIQ_PELOTON_OAUTH_REFRESH_TOKEN }}
+          TRAINIQ_PELOTON_OAUTH_EXPIRES_AT: ${{ secrets.TRAINIQ_PELOTON_OAUTH_EXPIRES_AT }}
+          TRAINIQ_EUFY_EMAIL: ${{ secrets.TRAINIQ_EUFY_EMAIL }}
+          TRAINIQ_EUFY_PASSWORD: ${{ secrets.TRAINIQ_EUFY_PASSWORD }}
+          TRAINIQ_EUFY_ACCESS_TOKEN: ${{ secrets.TRAINIQ_EUFY_ACCESS_TOKEN }}
+          TRAINIQ_EUFY_REFRESH_TOKEN: ${{ secrets.TRAINIQ_EUFY_REFRESH_TOKEN }}
+          TRAINIQ_EUFY_EXPIRES_AT: ${{ secrets.TRAINIQ_EUFY_EXPIRES_AT }}
+        run: |
+          ROTATED_ARG=""
+          if [ -f state/creds_out.json ]; then ROTATED_ARG="--rotated state/creds_out.json"; fi
+          python .mono/projects/trainiq/deploy/trainiq-data/scripts/merge_credentials.py \
+            --mode seal $ROTATED_ARG --out state/creds_sealed.json
+          rm -f state/creds_out.json
+
+      - name: Encrypt rotated credentials
+        if: always()
+        env:
+          TRAINIQ_STATE_PASSPHRASE: ${{ secrets.TRAINIQ_STATE_PASSPHRASE }}
+        run: |
+          openssl enc -aes-256-cbc -pbkdf2 -pass env:TRAINIQ_STATE_PASSPHRASE \
+            -in state/creds_sealed.json -out state/creds.enc
+          rm -f state/creds_sealed.json
+
+      - name: Upload credentials asset
+        # Always, even on total failure — a rotated Peloton refresh token
+        # must survive a partial/failed run (architecture doc).
+        if: always()
+        run: |
+          if gh release view data --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            gh release upload data state/creds.enc --repo "${{ github.repository }}" --clobber
+          else
+            gh release create data --repo "${{ github.repository }}" --title data \
+              --notes "TrainIQ sync state (DB + encrypted credentials), overwritten every run." \
+              state/creds.enc
+          fi
+
+      - name: Upload DB asset
+        if: steps.sync.outputs.exit_code == '0' || steps.sync.outputs.exit_code == '3'
+        run: |
+          sqlite3 state/trainiq.db ".backup state/trainiq.db.snapshot"
+          mv -f state/trainiq.db.snapshot state/trainiq.db
+          if gh release view data --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            gh release upload data state/trainiq.db --repo "${{ github.repository }}" --clobber
+          else
+            gh release create data --repo "${{ github.repository }}" --title data \
+              --notes "TrainIQ sync state (DB + encrypted credentials), overwritten every run." \
+              state/trainiq.db
+          fi
+
+      - name: Commit coach/ to main
+        if: always()
+        run: |
+          git config user.name "trainiq-sync-bot"
+          git config user.email "trainiq-sync-bot@users.noreply.github.com"
+          git add coach/
+          if ! git diff --cached --quiet; then
+            git commit -m "coach: sync $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            git push
+          fi
+
+      - name: Report result
+        if: always()
+        env:
+          EXIT_CODE: ${{ steps.sync.outputs.exit_code }}
+        run: |
+          STATUS_BODY=$(cat coach/status.md 2>/dev/null || echo "No status.md was produced.")
+          ALERT_TITLE="trainiq sync needs attention"
+
+          # AC9: every open `refresh` issue gets handled on every run, not
+          # just the one that triggered this run — a queued refresh run
+          # can be superseded by concurrency (architecture doc).
+          REFRESH_ISSUES=$(gh issue list --repo "${{ github.repository }}" --state open --search "refresh in:title" --json number,title --jq '.[] | select(.title=="refresh") | .number')
+          REFRESH_LABELED=$(gh issue list --repo "${{ github.repository }}" --state open --label refresh --json number --jq '.[].number')
+          for num in $(printf '%s\n%s\n' "$REFRESH_ISSUES" "$REFRESH_LABELED" | sort -u); do
+            [ -z "$num" ] && continue
+            if [ "$EXIT_CODE" = "0" ] || [ "$EXIT_CODE" = "3" ]; then
+              gh issue comment "$num" --repo "${{ github.repository }}" --body "$STATUS_BODY"
+              gh issue close "$num" --repo "${{ github.repository }}"
+            else
+              FAIL_BODY=$(printf 'Sync failed (exit %s):\n\n%s' "$EXIT_CODE" "$STATUS_BODY")
+              gh issue comment "$num" --repo "${{ github.repository }}" --body "$FAIL_BODY"
+            fi
+          done
+
+          # AC8: a deduplicated alert issue for the BO, closed by the next clean run.
+          ALERT_NUM=$(gh issue list --repo "${{ github.repository }}" --state open --label alert --search "\"$ALERT_TITLE\" in:title" --json number --jq '.[0].number')
+          if [ "$EXIT_CODE" = "0" ]; then
+            if [ -n "$ALERT_NUM" ]; then
+              gh issue comment "$ALERT_NUM" --repo "${{ github.repository }}" --body "Resolved: $STATUS_BODY"
+              gh issue close "$ALERT_NUM" --repo "${{ github.repository }}"
+            fi
+          else
+            if [ -n "$ALERT_NUM" ]; then
+              gh issue comment "$ALERT_NUM" --repo "${{ github.repository }}" --body "$STATUS_BODY"
+            else
+              gh issue create --repo "${{ github.repository }}" --title "$ALERT_TITLE" --label alert --body "$STATUS_BODY"
+            fi
+          fi
+
+      - name: Clean up local secrets
+        if: always()
+        run: rm -f state/creds.json state/creds_out.json state/creds_sealed.json state/creds.enc
+
+      - name: Fail the job on total failure or usage error
+        if: steps.sync.outputs.exit_code == '1' || steps.sync.outputs.exit_code == '2'
+        run: exit 1
