@@ -15,6 +15,7 @@ from tests.conftest import insert_activity, insert_weigh_in
 _EXPECTED_FILES = {
     "profile.md", "recent.md", "recent.json", "last_done.md",
     "load.md", "load.json", "weight.md", "weight.json", "performance.md",
+    "peloton_classes.md", "peloton_classes.json",
 }
 
 

@@ -156,7 +156,37 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         "--as-of", type=str, default=None,
         help="YYYY-MM-DD; defaults to the latest data date (never wall-clock \"now\").",
     )
+    export_parser.add_argument(
+        "--no-classes", action="store_true",
+        help="Skip the Peloton class-candidates section (issue #72); "
+             "peloton_classes.md/.json still get written, stating 'class catalog unavailable'.",
+    )
     return parser.parse_args(argv)
+
+
+def _build_class_catalog(conn, args: argparse.Namespace) -> PelotonConnector | None:
+    """Issue #72: the existing authenticated Peloton connector, or None —
+    `--no-classes`, no stored Peloton credentials, or an authentication
+    failure all take the same "no catalog" path, which `run_export`
+    already turns into "class catalog unavailable" (AC 7). No new auth
+    path: this reuses the connector's existing credential-backed
+    `authenticate()`, exactly like a regular sync would."""
+    if args.no_classes:
+        return None
+    credential_store = CredentialStore(conn=conn)
+    has_peloton_creds = bool(
+        credential_store.get("peloton", "email") and credential_store.get("peloton", "password")
+    )
+    if not has_peloton_creds:
+        return None
+    connector = PelotonConnector(credential_store)
+    try:
+        if not connector.authenticate():
+            return None
+    except Exception as exc:  # noqa: BLE001 - never block the rest of the export over this
+        diagnostic_logger().warning(f"peloton: authentication for class catalog failed: {exc}")
+        return None
+    return connector
 
 
 def _run_export_command(args: argparse.Namespace) -> int:
@@ -167,7 +197,8 @@ def _run_export_command(args: argparse.Namespace) -> int:
 
     conn = open_db(db_path)
     try:
-        written = run_export(conn, args.out, config_path, as_of=as_of)
+        catalog = _build_class_catalog(conn, args)
+        written = run_export(conn, args.out, config_path, as_of=as_of, catalog=catalog)
     finally:
         conn.close()
 

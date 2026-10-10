@@ -19,14 +19,17 @@ everywhere, not once per file.
 
 from __future__ import annotations
 
+import json
 from datetime import date
 from pathlib import Path
 from sqlite3 import Connection
 from typing import Optional
 
 from trainiq.dedup.detector import primary_activity_ids
-from trainiq.export import last_done, load, performance, profile, recent, weight
+from trainiq.export import classes, last_done, load, performance, profile, recent, weight
+from trainiq.export.classes import ClassCatalog
 from trainiq.export.data import resolve_as_of
+from trainiq.logging_setup import diagnostic_logger
 
 
 def run_export(
@@ -34,9 +37,11 @@ def run_export(
     out_dir: Path,
     config_path: Path,
     as_of: Optional[date] = None,
+    catalog: Optional[ClassCatalog] = None,
 ) -> list[Path]:
-    """Writes all six Markdown files (plus JSON companions for recent/load/
-    weight) into `out_dir`, creating it if absent. Returns the paths
+    """Writes all seven Markdown files (plus JSON companions for
+    recent/load/weight/peloton_classes) into `out_dir`, creating it if
+    absent. Returns the paths
     written, in the fixed order below — not the order a filesystem listing
     would happen to return them in."""
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -64,6 +69,26 @@ def run_export(
     written.append(_write(out_dir, "weight.json", weight_json))
 
     written.append(_write(out_dir, "performance.md", performance.render(conn, primary_ids, resolved_as_of)))
+
+    # Issue #72: appended last, after every #71 file is written, inside its
+    # own try/except — a crash building the class catalog (network call,
+    # not a pure function like the renderers above) must never take down
+    # the rest of the export (AC 7). `classes.build()` already degrades
+    # expected failures (no catalog, auth/rate-limit errors, a malformed
+    # response) to a well-formed "unavailable" result on its own; this is
+    # the outer safety net for anything genuinely unexpected.
+    try:
+        classes_md, classes_json = classes.render(conn, primary_ids, resolved_as_of, catalog)
+    except Exception as exc:  # noqa: BLE001 - outer resilience boundary, see above
+        diagnostic_logger().warning(f"classes export failed unexpectedly: {exc}")
+        classes_md = "\n".join(["# Peloton class candidates", f"As of: {resolved_as_of.isoformat()}", "", "Class catalog unavailable.", ""])
+        classes_json = json.dumps(
+            {"as_of": resolved_as_of.isoformat(), "status": "unavailable", "reason": str(exc),
+             "sections": [], "unmatched_tags": [], "not_shown": []},
+            sort_keys=True, indent=2,
+        )
+    written.append(_write(out_dir, "peloton_classes.md", classes_md))
+    written.append(_write(out_dir, "peloton_classes.json", classes_json))
 
     return written
 
