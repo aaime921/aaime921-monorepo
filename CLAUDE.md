@@ -17,7 +17,7 @@ Routines load this file on every run, so it is kept short.
    routines at once (merge conflicts, duplicate work). If a routine sees several or none:
    remove all `stage:*`, add `needs:human`, comment, stop.
 
-## Routines (6)
+## Routines (7)
 
 | Routine | Trigger | Filter | Model |
 |---|---|---|---|
@@ -27,8 +27,11 @@ Routines load this file on every run, so it is kept short.
 | qa | Issue: Labeled | `stage:qa` | Sonnet 5.5 |
 | lead | Pull request: Closed | `Is merged = true` | Sonnet 5.5 |
 | lead-router | Issue: Labeled | `needs:routing` | Opus 5.5 |
+| pipeline-watchdog | Schedule: hourly (`7 * * * *`) | (none) | Haiku 4.5 |
 
-Only the Composio connector. Each routine reads its instruction file in
+Only the Composio connector. `pipeline-watchdog` (added 2026-10-10, BO-approved)
+restarts issues stalled 45+ min on a `stage:*` label once, then adds `needs:human`, and
+unblocks `blocked:dependency` after the referenced PR merges. Each routine reads its instruction file in
 `docs/ROUTINE-INSTRUCTIONS/` (entry point: `00-MONOREPO-ENTRY-POINT.md`).
 
 ## Ringfencing
