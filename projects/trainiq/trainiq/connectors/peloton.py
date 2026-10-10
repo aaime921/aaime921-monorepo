@@ -184,6 +184,19 @@ Feature 3.10 (issue #57 — distance, replacing the disproved `/api/me`
   correct distance, exactly the "trust a global assumption instead of
   verifying per record" pattern this issue exists to retire. See
   `docs/trainiq/architecture/57-peloton-distance-performance-graph-source.md`.
+
+Feature 3.11 (issue #72 — class-candidate lookups for the coach export):
+  two new read-only public methods, `fetch_ride_metadata_mappings()` and
+  `fetch_archived_classes()`, for `trainiq/export/classes.py`'s
+  `peloton_classes.md`/`.json`. Both are thin wrappers around
+  `_authenticated_get(..., not_found_returns_none=True)` — the exact same
+  auth header, 401/403 -> `AuthenticationError`, 429/5xx -> `TransientError`
+  (honoring `Retry-After`), and rate limiting as every other call in this
+  connector; no new HTTP code path. `fetch_archived_classes()` hardcodes
+  `ARCHIVED_RIDE_BROWSE_CATEGORY` ("cycling") rather than taking it as a
+  parameter: this project is bike-only for class candidates, a BO decision
+  (see the requirements doc), not something a caller should be able to
+  override. See `docs/trainiq/architecture/72-peloton-class-candidates.md`.
 """
 
 from __future__ import annotations
@@ -404,6 +417,15 @@ PERFORMANCE_FETCH_STATUS_OK = "ok"          # attempted, response parsed
                                              # still individually be None —
                                              # a sparse but well-formed response)
 PERFORMANCE_FETCH_STATUS_FAILED = "failed"  # attempted, fetch itself failed
+
+# Issue #72 — class-candidate lookups. Live evidence (BO's account,
+# 2026-10-10, docs/trainiq/requirements/72-peloton-class-candidates.md):
+# metadata_mappings returns `class_types` (14 active cycling types) and
+# `instructors` (id -> name); the archived-ride search takes
+# browse_category/class_type_id/duration/sort_by/desc/limit/page.
+METADATA_MAPPINGS_ENDPOINT = "/api/ride/metadata_mappings"
+ARCHIVED_RIDE_ENDPOINT = "/api/v2/ride/archived"
+ARCHIVED_RIDE_BROWSE_CATEGORY = "cycling"  # bike only, BO decision (issue #72)
 
 
 def _coerce_int(value: Any) -> int | None:
@@ -933,6 +955,47 @@ class PelotonConnector(Connector):
             )
             return None
         return _parse_performance_response(body)
+
+    def fetch_ride_metadata_mappings(self) -> dict[str, Any] | None:
+        """Issue #72: `GET /api/ride/metadata_mappings` — the class-type
+        name/id and instructor id/name lookup tables `trainiq.export.classes`
+        uses to resolve the BO's history tags to a searchable
+        `class_type_id` and to display instructor names on class rows. Same
+        not_found_returns_none contract as `fetch_class_details()`. Raises
+        `AuthenticationError` if called before a successful `authenticate()`."""
+        if self._active_auth_header is None:
+            raise AuthenticationError(
+                f"{PROVIDER}: fetch_ride_metadata_mappings() called before a successful authenticate()"
+            )
+        return self._authenticated_get(
+            f"{self._base_url}{METADATA_MAPPINGS_ENDPOINT}", not_found_returns_none=True,
+        )
+
+    def fetch_archived_classes(self, class_type_id: str, duration_s: int, limit: int = 8) -> dict[str, Any] | None:
+        """Issue #72: `GET /api/v2/ride/archived` — the newest `limit`
+        classes of `class_type_id` at `duration_s` seconds, newest first
+        (`sort_by=original_air_time&desc=true`), bike only
+        (`ARCHIVED_RIDE_BROWSE_CATEGORY`, not a parameter — see module
+        docstring). Same not_found_returns_none contract as
+        `fetch_class_details()`. Raises `AuthenticationError` if called
+        before a successful `authenticate()`."""
+        if self._active_auth_header is None:
+            raise AuthenticationError(
+                f"{PROVIDER}: fetch_archived_classes() called before a successful authenticate()"
+            )
+        return self._authenticated_get(
+            f"{self._base_url}{ARCHIVED_RIDE_ENDPOINT}",
+            params={
+                "browse_category": ARCHIVED_RIDE_BROWSE_CATEGORY,
+                "class_type_id": class_type_id,
+                "duration": duration_s,
+                "sort_by": "original_air_time",
+                "desc": "true",
+                "limit": limit,
+                "page": 0,
+            },
+            not_found_returns_none=True,
+        )
 
     def download(self, since: str | None = None) -> list[dict[str, Any]]:
         if self._active_auth_header is None:
