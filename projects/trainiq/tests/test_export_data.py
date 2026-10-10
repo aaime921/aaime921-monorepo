@@ -5,7 +5,14 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 
-from trainiq.export.data import Activity, load_activities, load_weigh_ins, resolve_as_of, sport_of
+from trainiq.export.data import (
+    Activity,
+    load_activities,
+    load_weigh_ins,
+    parse_timestamp,
+    resolve_as_of,
+    sport_of,
+)
 
 from tests.conftest import insert_activity, insert_weigh_in
 
@@ -43,6 +50,25 @@ def test_sport_of_peloton_walk_via_class_type():
 def test_sport_of_unrecognized_other_falls_back_to_other():
     assert sport_of(_activity(discipline="other", sport_type_raw="Yoga")) == "other"
     assert sport_of(_activity(discipline="strength")) == "other"
+
+
+# --- parse_timestamp ---------------------------------------------------------
+# BO rework (issue #71): the real DB mixes epoch-second strings (Peloton,
+# Eufy) with ISO 8601 (Strava/Strava Unofficial) in the same column; QA's
+# fixtures were ISO-only, so `trainiq export` crashed on the real DB.
+
+def test_parse_timestamp_epoch_seconds_string():
+    assert parse_timestamp("1757357927") == datetime.fromtimestamp(1757357927, tz=timezone.utc)
+
+
+def test_parse_timestamp_iso_with_offset():
+    assert parse_timestamp("2023-10-08T16:16:17+00:00") == datetime(
+        2023, 10, 8, 16, 16, 17, tzinfo=timezone.utc
+    )
+
+
+def test_parse_timestamp_naive_iso_treated_as_utc():
+    assert parse_timestamp("2026-01-01T07:00:00").tzinfo is not None
 
 
 # --- load_activities ---------------------------------------------------------
@@ -89,6 +115,31 @@ def test_load_activities_naive_start_time_treated_as_utc(db):
     assert activities[0].start_time.tzinfo is not None
 
 
+def test_load_activities_peloton_epoch_start_time(db):
+    """Peloton stores start_time as an epoch-second string, not ISO 8601
+    (BO, issue #71 rework) — the crash on the BO's real DB."""
+    activity_id = insert_activity(db, provider="peloton", external_id="1", start_time="1757357927")
+
+    activities = load_activities(db, primary_ids={activity_id})
+
+    assert activities[0].start_time == datetime.fromtimestamp(1757357927, tz=timezone.utc)
+
+
+def test_load_activities_mixed_epoch_and_iso_sort_correctly(db):
+    """A Peloton (epoch) row and a Strava Unofficial (ISO) row in the same
+    table sort by true chronological order, not by raw-string order."""
+    earlier_peloton = insert_activity(
+        db, provider="peloton", external_id="1", start_time="1700000000"
+    )  # 2023-11-14
+    later_strava = insert_activity(
+        db, provider="strava_unofficial", external_id="2", start_time="2026-01-01T07:00:00+00:00"
+    )
+
+    activities = load_activities(db, primary_ids={earlier_peloton, later_strava})
+
+    assert [a.id for a in activities] == [earlier_peloton, later_strava]
+
+
 # --- load_weigh_ins ----------------------------------------------------------
 
 def test_load_weigh_ins_excludes_flagged_unless_bo_confirmed(db):
@@ -108,6 +159,17 @@ def test_load_weigh_ins_excludes_flagged_unless_bo_confirmed(db):
     assert plausible in ids
     assert confirmed in ids
     assert flagged not in ids
+
+
+def test_load_weigh_ins_eufy_epoch_timestamp(db):
+    """Eufy stores weigh_ins.timestamp as an epoch-second string, not ISO
+    8601 (BO, issue #71 rework)."""
+    weigh_in_id = insert_weigh_in(db, external_id="1", timestamp="1748027437", weight_kg=80.0)
+
+    weigh_ins = load_weigh_ins(db)
+
+    assert weigh_ins[0].id == weigh_in_id
+    assert weigh_ins[0].timestamp == datetime.fromtimestamp(1748027437, tz=timezone.utc)
 
 
 # --- resolve_as_of -----------------------------------------------------------
@@ -134,3 +196,17 @@ def test_resolve_as_of_uses_weigh_in_when_later_than_last_activity(db):
 def test_resolve_as_of_empty_db_falls_back_to_today(db):
     result = resolve_as_of(db, None)
     assert result == datetime.now(timezone.utc).date()
+
+
+def test_resolve_as_of_mixed_epoch_and_iso_picks_true_latest(db):
+    """A plain SQL `MAX()` on the raw TEXT column is lexicographic: every
+    ISO string ("2024-...") sorts after every 10-digit epoch string
+    ("17...") on the leading character alone, regardless of which one is
+    chronologically later. Here the epoch-stamped Peloton row is the real
+    latest; a lexicographic MAX() would wrongly pick the older ISO row."""
+    insert_activity(
+        db, provider="strava_unofficial", external_id="1", start_time="2024-01-01T00:00:00+00:00"
+    )
+    insert_activity(db, provider="peloton", external_id="2", start_time="1793000000")  # 2026-10-30
+
+    assert resolve_as_of(db, None) == datetime.fromtimestamp(1793000000, tz=timezone.utc).date()

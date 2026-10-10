@@ -91,6 +91,51 @@ def test_run_export_dedup_pair_counts_once_in_recent_and_load(db, tmp_path: Path
     assert last_week["load"] == 75.0  # not 150.0 — the secondary side isn't double-counted
 
 
+def test_run_export_succeeds_against_real_shaped_mixed_timestamp_formats(db, tmp_path: Path):
+    """BO (issue #71 rework): `trainiq export` crashed against a copy of
+    the BO's real DB because every renderer assumed `start_time`/
+    `timestamp` is ISO 8601. The real storage mix is Peloton epoch-second
+    strings, Eufy epoch-second strings, and Strava Unofficial ISO 8601 —
+    including a linked Peloton/Strava pair at the same instant, the exact
+    shape QA's ISO-only fixtures didn't cover. This is an integration test
+    through `run_export`, not a unit test of one renderer, since the bug
+    only showed up once every renderer ran against the real mix."""
+    peloton_id = insert_activity(
+        db, provider="peloton", external_id="p1", start_time="1728540000",  # 2024-10-10T06:00:00Z
+        discipline="cycling", duration_s=1800, avg_power=200, avg_hr=140,
+        training_load=75.0, training_load_method="tss",
+        activity_title="45 min Power Zone Ride", instructor_name="Robin Arzon",
+    )
+    strava_secondary_id = insert_activity(
+        db, provider="strava_unofficial", external_id="s1",
+        start_time="2024-10-10T06:00:00+00:00",  # same instant as the Peloton row above
+        discipline="cycling", duration_s=1800, distance_m=20000.0,
+        training_load=75.0, training_load_method="tss",
+    )
+    db.execute(
+        "INSERT INTO dedup_links (activity_id_a, activity_id_b, confidence_score, resolution) "
+        "VALUES (?, ?, 0.95, 'linked:primary=peloton')",
+        (min(peloton_id, strava_secondary_id), max(peloton_id, strava_secondary_id)),
+    )
+    insert_activity(
+        db, provider="strava_unofficial", external_id="s2",
+        start_time="2026-01-15T07:00:00+00:00",
+        discipline="running", duration_s=2400, moving_time_s=2300, distance_m=8800.0,
+    )
+    insert_activity(
+        db, provider="peloton", external_id="p2", start_time="1793000000",  # 2026-10-26
+        discipline="cycling", duration_s=1200, activity_title="20-min FTP Test", avg_power=175,
+    )
+    db.commit()
+    insert_weigh_in(db, provider="eufy", external_id="w1", timestamp="1748027437", weight_kg=80.0)
+
+    written = run_export(db, tmp_path / "out", tmp_path / "config.json", as_of=None)
+
+    assert {p.name for p in written} == _EXPECTED_FILES
+    for path in written:
+        assert path.exists()
+
+
 def test_run_export_each_file_is_under_50kb_on_a_large_dataset(db, tmp_path: Path):
     """AC 1/2: a target of < 50 KB per file, proven against a dataset much
     larger than the BO's real one (row caps in recent.md/last_done.md are

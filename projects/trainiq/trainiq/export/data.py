@@ -51,12 +51,23 @@ class WeighIn:
     weight_kg: Optional[float]
 
 
-def _parse_iso(raw: str) -> datetime:
-    """`normalized_activities.start_time`/`weigh_ins.timestamp` are stored
-    as ISO-8601 strings; some are naive (treated as UTC, matching how
-    they're produced — see connectors' normalize()), some already
-    tz-aware. Always returns a UTC-aware datetime, so callers can compare
-    across providers without a separate naive/aware branch each time."""
+def parse_timestamp(raw: str) -> datetime:
+    """Shared parser for `normalized_activities.start_time`,
+    `weigh_ins.timestamp`, and any other raw timestamp column read
+    directly by a renderer. Storage format depends on provider, not on
+    which column it is: Peloton and Eufy store epoch-second strings;
+    Strava (official and unofficial) stores ISO 8601. The two formats
+    are unambiguous on sight (an epoch string is all digits; ISO 8601
+    always has a `-` or `:`), so this tries `int()` first rather than
+    threading a provider argument through every call site. Some ISO
+    values are naive (treated as UTC, matching how they're produced —
+    see connectors' normalize()), some already tz-aware. Always returns
+    a UTC-aware datetime, so callers can compare across providers
+    without a separate naive/aware/epoch branch each time."""
+    try:
+        return datetime.fromtimestamp(int(raw), tz=timezone.utc)
+    except ValueError:
+        pass
     parsed = datetime.fromisoformat(raw)
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
@@ -81,7 +92,7 @@ def load_activities(
     for row in rows:
         if row["id"] not in primary_ids:
             continue
-        start_time = _parse_iso(row["start_time"])
+        start_time = parse_timestamp(row["start_time"])
         if since is not None and start_time < since:
             continue
         if until is not None and start_time > until:
@@ -127,7 +138,7 @@ def load_weigh_ins(
 
     weigh_ins = []
     for row in rows:
-        timestamp = _parse_iso(row["timestamp"])
+        timestamp = parse_timestamp(row["timestamp"])
         if since is not None and timestamp < since:
             continue
         if until is not None and timestamp > until:
@@ -143,19 +154,28 @@ def resolve_as_of(conn: sqlite3.Connection, override: Optional[date]) -> date:
     (unflagged) weigh-in — never wall-clock "now" (AC 11: same DB -> same
     files). Only falls back to today's UTC date when the DB has neither —
     an edge case a real database never hits, but `run_export` must still
-    resolve to something rather than crash on a brand-new install."""
+    resolve to something rather than crash on a brand-new install.
+
+    Finds the max in Python via `parse_timestamp`, not SQL `MAX()` on the
+    raw column: with mixed epoch/ISO storage (real data, not QA's ISO-only
+    fixtures) a plain TEXT `MAX()` is lexicographic, and every ISO string
+    ("2026-...") sorts after every 10-digit epoch string ("17...") on the
+    leading character alone — silently picking the wrong row whenever both
+    formats are present, rather than crashing."""
     if override is not None:
         return override
 
-    latest_activity = conn.execute(
-        "SELECT MAX(start_time) AS m FROM normalized_activities"
-    ).fetchone()["m"]
-    latest_weigh_in = conn.execute(
-        "SELECT MAX(timestamp) AS m FROM weigh_ins "
-        "WHERE is_weight_flagged_implausible = 0 OR bo_confirmed_valid = 1"
-    ).fetchone()["m"]
+    activity_raw = [
+        row["start_time"] for row in conn.execute("SELECT start_time FROM normalized_activities")
+    ]
+    weigh_in_raw = [
+        row["timestamp"] for row in conn.execute(
+            "SELECT timestamp FROM weigh_ins "
+            "WHERE is_weight_flagged_implausible = 0 OR bo_confirmed_valid = 1"
+        )
+    ]
 
-    candidates = [_parse_iso(c) for c in (latest_activity, latest_weigh_in) if c]
+    candidates = [parse_timestamp(c) for c in activity_raw + weigh_in_raw if c]
     if not candidates:
         return datetime.now(timezone.utc).date()
     return max(candidates).date()
