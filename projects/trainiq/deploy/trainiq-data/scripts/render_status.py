@@ -114,11 +114,27 @@ def load_json(path: Optional[Path]) -> Optional[dict]:
         return json.load(f)
 
 
+def parse_exit_code(value: str) -> int:
+    """Coerces `steps.sync.outputs.exit_code` to an int.
+
+    It's empty when the job failed before the "Run headless sync" step ever
+    ran (checkout, install, or the "Restore prior DB and credentials" abort) —
+    `trainiq --headless` never started, so there is no exit code to report.
+    That's still a failure, not something to crash `render_status.py` over:
+    this step runs with `if: always()` precisely so `status.md` keeps
+    reflecting the latest run even then (AC7).
+    """
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return EXIT_TOTAL_FAILURE
+
+
 def _parse_args(argv):
     parser = argparse.ArgumentParser()
     parser.add_argument("--status-json", type=Path, default=None, help="trainiq --headless's status.json, if produced.")
     parser.add_argument("--state-json", type=Path, default=None, help="coach/state.json from the prior run, if any.")
-    parser.add_argument("--exit-code", type=int, required=True)
+    parser.add_argument("--exit-code", type=str, required=True, help="steps.sync.outputs.exit_code; may be empty.")
     parser.add_argument("--out", type=Path, required=True, help="Where to write coach/status.md.")
     return parser.parse_args(argv)
 
@@ -128,8 +144,9 @@ def main(argv: list[str] | None = None) -> int:
     status = load_json(args.status_json)
     state = load_json(args.state_json) or {}
     now = datetime.now(timezone.utc)
+    exit_code = parse_exit_code(args.exit_code)
 
-    content = render(status, state, now, args.exit_code)
+    content = render(status, state, now, exit_code)
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(content)

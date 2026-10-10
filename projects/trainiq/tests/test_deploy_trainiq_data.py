@@ -151,6 +151,15 @@ def test_render_failure_with_no_status_json():
     assert "No status report was produced" in content
 
 
+def test_parse_exit_code_defaults_empty_or_non_numeric_to_total_failure():
+    """AC7 rework: `steps.sync.outputs.exit_code` is empty when the job died
+    before "Run headless sync" (checkout, install, or the Restore-step
+    abort), not just absent — both must count as a failure, not crash."""
+    assert render_status.parse_exit_code("") == render_status.EXIT_TOTAL_FAILURE
+    assert render_status.parse_exit_code("not-a-number") == render_status.EXIT_TOTAL_FAILURE
+    assert render_status.parse_exit_code("3") == render_status.EXIT_PARTIAL
+
+
 def test_render_never_contains_a_credential_looking_value():
     """AC10: nothing render() produces should be a secret value — it only
     ever sees names, counts and already-secret-free strings."""
@@ -338,6 +347,26 @@ def test_render_status_cli_writes_status_md_and_state_json(tmp_path):
     assert rc == 0
     assert out_path.exists()
     assert "strava_last_ok" not in json.loads(state_path.read_text())
+
+
+def test_render_status_cli_with_empty_exit_code_still_writes_a_failure_status(tmp_path):
+    """QA's AC7 repro: a pre-sync step failure leaves `exit_code` empty, and
+    `status.json` was never written — this must still produce a failed
+    `status.md`, not crash and leave the previous run's file in place."""
+    state_path = tmp_path / "state.json"
+    out_path = tmp_path / "status.md"
+
+    rc = render_status.main([
+        "--status-json", str(tmp_path / "status.json"),  # does not exist
+        "--state-json", str(state_path),
+        "--exit-code", "",
+        "--out", str(out_path),
+    ])
+
+    assert rc == 0
+    content = out_path.read_text()
+    assert "Result: failed" in content
+    assert "No status report was produced" in content
 
 
 def test_refresh_filter_cli_exit_code_reflects_should_run(tmp_path):
