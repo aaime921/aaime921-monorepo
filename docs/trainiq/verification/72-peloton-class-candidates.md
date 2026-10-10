@@ -19,3 +19,18 @@
 Not verified (unverifiable offline, flagged by Architect and Developer, needs BO live check):
 - Archived `data[].id` equals stored `provider_class_id`. If not, every row shows `new` with no error.
 - Raw shape of `/api/ride/metadata_mappings` is modeled as lists of `{id, name}`, not captured live.
+
+---
+
+# Addendum: PR #82 (second implementation of #72)
+
+A second Developer run opened PR #82 (`claude/magical-euler-8axzle`) for the same issue, duplicating #81.
+`pytest tests/` on #82 head (clean venv): 794 passed, 2 failed (`test_peloton_csv_import.py`, needs a BO-local CSV; same pre-existing failures as on #81).
+Class tests (`test_export_classes.py`, `test_peloton_class_catalog.py`, `test_export_run_export.py`): 39 passed.
+
+| AC | Result | Reason |
+|---|---|---|
+| 1-9 | Pass | Same coverage as the table above; `browse_category` enforced in `fetch_archived_classes` |
+
+Same unverified live items as #81 (`data[].id` vs `provider_class_id`; `metadata_mappings` shape).
+BO must merge only one of #81 / #82 and close the other (they overlap and will conflict).
