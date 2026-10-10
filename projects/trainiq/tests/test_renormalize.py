@@ -497,4 +497,92 @@ def test_renormalize_peloton_total_output_kj_from_already_stored_total_work(db):
         "SELECT total_output_kj FROM normalized_activities WHERE provider = ? AND external_id = 'w1'",
         (PELOTON_PROVIDER,),
     ).fetchone())
-    assert row["total_output_kj"] == pytest.approx(250.0)
+    assert row["total_output_kj"] == 250.0
+
+
+# --- Issue #71: the script must pass the stored athlete profile through ----
+
+def test_renormalize_script_passes_stored_profile_so_loads_are_not_reset_to_unknown(tmp_path, monkeypatch):
+    """Before this fix, the script never passed `athlete_profile=` to
+    renormalize_provider(), so training_load/training_load_method reset to
+    None/"unknown" on every run regardless of what profile was stored
+    (compute_training_load()'s documented behavior for profile=None). With
+    a real profile stored, an end-to-end script run must produce a real
+    TRIMP value, not silently discard it."""
+    import trainiq.logging_setup as logging_setup_module
+
+    from trainiq.athlete.profile import AthleteProfile
+    from trainiq.athlete.store import save_athlete_profile
+
+    db_path = tmp_path / "trainiq.db"
+    conn = open_db(db_path)
+    save_athlete_profile(conn, AthleteProfile(sex="male", resting_hr=60, max_hr=180))
+
+    payload = {**_raw_payload(1, "Run", "Run"), "_streams_avg_hr": 140}
+    conn.execute(
+        "INSERT INTO raw_activities (provider, external_id, payload_json, fetched_at) "
+        "VALUES (?, ?, ?, ?)",
+        (PROVIDER, "1", json.dumps(payload), "2026-10-06T00:00:00+00:00"),
+    )
+    conn.execute(
+        """
+        INSERT INTO normalized_activities
+            (provider, external_id, start_time, duration_s, discipline, distance_m,
+             avg_hr, max_hr, avg_power, max_power, calories,
+             training_load, training_load_method, source_confidence)
+        VALUES (?, '1', ?, 1900, 'other', 10000.0, NULL, NULL, NULL, NULL, NULL, NULL, 'unknown', 0.5)
+        """,
+        (PROVIDER, datetime(2026, 1, 5, 7, 0, 0, tzinfo=timezone.utc).isoformat()),
+    )
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setattr(logging_setup_module, "DEFAULT_LOG_DIR", tmp_path / "logs")
+    monkeypatch.setattr(sys, "argv", [
+        "renormalize_strava_unofficial.py",
+        "--db-path", str(db_path),
+    ])
+
+    with pytest.raises(SystemExit) as exc_info:
+        runpy.run_path(str(SCRIPT_PATH), run_name="__main__")
+    assert exc_info.value.code == 0
+
+    verify_conn = open_db(db_path)
+    row = verify_conn.execute(
+        "SELECT training_load, training_load_method FROM normalized_activities "
+        "WHERE provider = ? AND external_id = '1'",
+        (PROVIDER,),
+    ).fetchone()
+    verify_conn.close()
+
+    assert row["training_load_method"] == "trimp"
+    assert row["training_load"] is not None
+
+
+def test_renormalize_script_warns_when_no_profile_stored(tmp_path, monkeypatch, capsys):
+    """With no athlete_profile row at all, the script must still run to
+    completion (never crash) and tell the operator why loads stayed
+    unknown, rather than failing silently."""
+    import trainiq.logging_setup as logging_setup_module
+
+    db_path = tmp_path / "trainiq.db"
+    conn = open_db(db_path)
+    conn.execute(
+        "INSERT INTO raw_activities (provider, external_id, payload_json, fetched_at) "
+        "VALUES (?, ?, ?, ?)",
+        (PROVIDER, "1", json.dumps(_raw_payload(1, "Run", "Run")), "2026-10-06T00:00:00+00:00"),
+    )
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setattr(logging_setup_module, "DEFAULT_LOG_DIR", tmp_path / "logs")
+    monkeypatch.setattr(sys, "argv", [
+        "renormalize_strava_unofficial.py",
+        "--db-path", str(db_path),
+    ])
+
+    with pytest.raises(SystemExit) as exc_info:
+        runpy.run_path(str(SCRIPT_PATH), run_name="__main__")
+    assert exc_info.value.code == 0
+
+    assert "no athlete profile stored" in capsys.readouterr().out.lower()

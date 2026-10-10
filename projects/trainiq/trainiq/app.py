@@ -53,6 +53,7 @@ import argparse
 import json
 import os
 import sys
+from datetime import date
 from pathlib import Path
 
 from trainiq.athlete.store import load_athlete_profile
@@ -68,7 +69,8 @@ from trainiq.connectors.strava_unofficial import StravaUnofficialConnector
 from trainiq.credentials.store import ENV_CREDENTIALS_OUT, CredentialStore
 from trainiq.dedup.detector import run_backfill as run_dedup_backfill
 from trainiq import headless as headless_mod
-from trainiq.logging_setup import configure, diagnostic_logger, summary_logger
+from trainiq.export import run_export
+from trainiq.logging_setup import DEFAULT_LOG_DIR, configure, diagnostic_logger, summary_logger
 from trainiq.paths import Paths, platform_defaults, resolve_paths
 from trainiq.safety import RunningFromTrashError, assert_not_running_from_trash
 from trainiq.setup_wizard import run_configure, run_first_time_setup
@@ -139,7 +141,39 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         "--log-dir", default=None, metavar="PATH",
         help="Log directory; also settable via TRAINIQ_LOG_DIR.",
     )
+    # Issue #71: a subcommand, added alongside (not instead of) the flat
+    # bare-`trainiq`/`--configure` shape above — `dest="command"` defaults
+    # to None with no subcommand given, so existing `trainiq` and
+    # `trainiq --configure` invocations are completely unaffected.
+    subparsers = parser.add_subparsers(dest="command")
+    export_parser = subparsers.add_parser(
+        "export", help="Write Markdown/JSON summaries for the coach to --out."
+    )
+    export_parser.add_argument("--out", type=Path, required=True)
+    export_parser.add_argument("--db-path", type=Path, default=None)
+    export_parser.add_argument("--config-path", type=Path, default=None)
+    export_parser.add_argument(
+        "--as-of", type=str, default=None,
+        help="YYYY-MM-DD; defaults to the latest data date (never wall-clock \"now\").",
+    )
     return parser.parse_args(argv)
+
+
+def _run_export_command(args: argparse.Namespace) -> int:
+    configure(LOG_DIR)
+    db_path = args.db_path or (APP_SUPPORT_DIR / "trainiq.db")
+    config_path = args.config_path or CONFIG_PATH
+    as_of = date.fromisoformat(args.as_of) if args.as_of else None
+
+    conn = open_db(db_path)
+    try:
+        written = run_export(conn, args.out, config_path, as_of=as_of)
+    finally:
+        conn.close()
+
+    for path in written:
+        print(f"wrote {path}")
+    return 0
 
 
 def _build_configured_connectors(
@@ -349,6 +383,9 @@ def _run_headless(args: argparse.Namespace, db_path: Path, config_path: Path, lo
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
     headless = args.headless or os.environ.get(headless_mod.ENV_HEADLESS) == "1"
+
+    if args.command == "export":
+        return _run_export_command(args)
 
     if headless and args.configure:
         print("FATAL: --headless cannot be combined with --configure", file=sys.stderr)

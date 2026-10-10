@@ -64,6 +64,25 @@ For a GitHub Actions runner (no Mac, no Keychain, no prompts):
 
 See `scripts/benchmark.py`'s module docstring for what these numbers do and do not represent — in short, compare against a PREVIOUS run on the SAME machine, never against a different machine's numbers.
 
+## Coach export (issue #71)
+
+    trainiq export --out <dir>
+
+Writes `profile.md`, `recent.md`, `last_done.md`, `load.md`, `weight.md`,
+`performance.md` (plus JSON companions for `recent`/`load`/`weight`) into
+`<dir>`, creating it if absent. Deterministic for a given database:
+`--as-of YYYY-MM-DD` overrides the default anchor date (the latest
+activity or weigh-in date), never wall-clock "now". `--db-path`/
+`--config-path` default the same way the re-normalize scripts do.
+
+The weight-loss goal (`weight.md`/`profile.md`) is not in the database —
+set it once in `config.json` (same file as Eufy's `device_id`):
+
+    {"athlete": {"start_weight_kg": 82.1, "goal_weight_kg": 72.0}}
+
+Without it, those files print "goal: not configured" rather than
+inventing a number.
+
 ## Regenerate the synthetic dataset
 
     python3 -m trainiq.synthetic_dataset
