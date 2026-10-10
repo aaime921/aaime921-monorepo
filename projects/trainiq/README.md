@@ -26,6 +26,38 @@ docstring for exactly what it does and does not do.
 
     pytest
 
+## Headless / cloud run (issue #70)
+
+For a GitHub Actions runner (no Mac, no Keychain, no prompts):
+
+    TRAINIQ_CREDENTIAL_BACKEND=env \
+    TRAINIQ_CREDENTIALS_OUT=/path/to/rotated-credentials.json \
+        trainiq --headless
+
+- **Credentials**: with `TRAINIQ_CREDENTIAL_BACKEND=env`, `CredentialStore` reads
+  `TRAINIQ_<PROVIDER>_<CREDENTIAL_TYPE>` (e.g. `TRAINIQ_PELOTON_OAUTH_REFRESH_TOKEN`)
+  instead of Keychain — matches the secret names `scripts/push_secrets_to_github.py`
+  creates. Unset, behavior is Keychain exactly as on macOS.
+- **Rotation**: any credential rotated during the run (Peloton OAuth refresh, Eufy
+  re-login) is atomically rewritten to `--credentials-out PATH` /
+  `TRAINIQ_CREDENTIALS_OUT` (mode `0600`) on every change, so it survives a crash or a
+  later provider's failure. The file holds secret values by design; a workflow must
+  treat it as secret and delete it after use.
+- **Paths**: `--db-path`/`--config-path`/`--log-dir` or `TRAINIQ_DB_PATH`/
+  `TRAINIQ_CONFIG_PATH`/`TRAINIQ_LOG_DIR` override the default — today's `~/Library/...`
+  locations on macOS, XDG base directories (`$XDG_DATA_HOME`, `$XDG_CONFIG_HOME`,
+  `$XDG_STATE_HOME`) everywhere else. `TRAINIQ_CONFIG_JSON` seeds `config.json` from a
+  JSON string if that file doesn't already exist (headless only).
+- **`--headless`** (or `TRAINIQ_HEADLESS=1`): never prompts; writes a machine-readable
+  `status.json` to `--status-json PATH` / `TRAINIQ_STATUS_JSON` (default
+  `<log-dir>/status.json`) on every run, success or failure. Per provider:
+  `status` (`ok`/`failed`/`auth_expired`), `records_synced`, `last_activity_time`
+  (`null` if none — never fabricated), and a `warning` for anything non-`ok`. Never
+  contains a secret value.
+- **Exit codes**: `0` all providers ok · `3` partial (≥1 ok and ≥1 failed/auth_expired)
+  · `1` total failure (nothing configured, every provider failed, or an unexpected
+  crash) · `2` usage error (bad arguments; `--headless` with `--configure`).
+
 ## Establish or re-check the performance baseline
 
     python3 scripts/benchmark.py --out docs/benchmarks/$(date +%Y-%m-%d).md

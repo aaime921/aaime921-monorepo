@@ -108,6 +108,14 @@ class ConnectorSyncResult:
     # risking drift — a second copy of the same text. None on the
     # error/skipped_reason branches, which build their own separate text.
     summary_line: Optional[str] = None
+    # Issue #70: additive field, appended at the end per the RC1-HF-006
+    # precedent — never reorder/rename existing fields. True only when
+    # this run's failure was specifically an AuthenticationError (either a
+    # raised one or authenticate() returning False) — never set for a
+    # TransientError or an unexpected exception. trainiq.headless maps
+    # this to status "auth_expired" instead of "failed", for any
+    # provider, not just Strava.
+    auth_failed: bool = False
 
 
 @dataclass
@@ -851,6 +859,7 @@ class SynchronizationEngine:
             return ConnectorSyncResult(
                 provider=provider, state=connector.get_state(),
                 error=str(exc), duration_s=time.monotonic() - start,
+                auth_failed=True,
             )
         except TransientError as exc:
             # Unaffected by ADR-038/escalation — a rate limit or timeout is
