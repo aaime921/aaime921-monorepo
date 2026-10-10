@@ -15,9 +15,31 @@ from trainiq.sync.engine import AuthenticationError, TransientError
 
 from tests.conftest import insert_activity
 
+def _class_type(name, id_, fitness_discipline="cycling", is_active=True):
+    """`GET /api/ride/metadata_mappings`'s `class_types` entries, real shape
+    (BO's live capture, 2026-10-10): a list of objects, not an id-keyed
+    dict. Extra keys (`display_name`, `list_order`, ...) are omitted here
+    since `_build_lookups` only reads `id`/`name`/`fitness_discipline`/
+    `is_active`."""
+    return {"id": id_, "name": name, "fitness_discipline": fitness_discipline, "is_active": is_active}
+
+
+def _instructor(id_, name):
+    """`metadata_mappings`'s `instructors` entries, real shape: a list of
+    objects (id, name, plus unrelated keys `_build_lookups` ignores)."""
+    return {"id": id_, "name": name}
+
+
 _METADATA = {
-    "class_types": {"Power Zone": "pz-id", "Low Impact": "li-id", "Climb": "climb-id"},
-    "instructors": {"inst-1": "Matt Wilpers", "inst-2": "Ally Love"},
+    "class_types": [
+        _class_type("Power Zone", "pz-id"),
+        _class_type("Low Impact", "li-id"),
+        _class_type("Climb", "climb-id"),
+    ],
+    "instructors": [
+        _instructor("inst-1", "Matt Wilpers"),
+        _instructor("inst-2", "Ally Love"),
+    ],
 }
 
 
@@ -176,7 +198,7 @@ def test_build_caps_at_max_types(db):
     names = ["Power Zone", "Low Impact", "Climb", "Music", "Intervals", "Progression", "Groove"]
     for i, name in enumerate(names):
         ids.add(_insert_peloton_ride(db, str(i), f"2026-10-0{i + 1}T07:00:00+00:00", name))
-    metadata = {"class_types": {n: f"id-{n}" for n in names}, "instructors": {}}
+    metadata = {"class_types": [_class_type(n, f"id-{n}") for n in names], "instructors": []}
     catalog = FakeCatalog(metadata=metadata)
 
     data = classes.build(db, ids, as_of=date(2026, 10, 10), catalog=catalog)
@@ -187,6 +209,77 @@ def test_build_caps_at_max_types(db):
     types_in_sections = {s["class_type"] for s in data["sections"]}
     assert "Progression" not in types_in_sections
     assert len(types_in_sections) == 6
+
+
+# --- real metadata_mappings shape: lists, cycling+active filter ------------
+
+def test_build_filters_out_inactive_and_non_cycling_class_types(db):
+    # A history tag that matches an inactive or non-cycling catalog entry
+    # must be treated as unmatched, not resolved to a searchable type id —
+    # the 169-item real catalog is mostly inactive/other-discipline noise.
+    ids = set()
+    ids.add(_insert_peloton_ride(db, "1", "2026-10-01T07:00:00+00:00", "Power Zone"))
+    ids.add(_insert_peloton_ride(db, "2", "2026-10-02T07:00:00+00:00", "Yoga Flow"))
+    metadata = {
+        "class_types": [
+            _class_type("Power Zone", "pz-id", fitness_discipline="cycling", is_active=False),
+            _class_type("Yoga Flow", "yoga-id", fitness_discipline="yoga", is_active=True),
+        ],
+        "instructors": [],
+    }
+    catalog = FakeCatalog(metadata=metadata)
+
+    data = classes.build(db, ids, as_of=date(2026, 10, 10), catalog=catalog)
+
+    assert set(data["unmatched_tags"]) == {"Power Zone", "Yoga Flow"}
+    assert catalog.search_calls == []
+
+
+def test_build_real_shaped_metadata_produces_classes_for_power_zone(db):
+    """Integration-style per the BO's rework note: a fake catalog returning
+    the real `metadata_mappings`/`archived` shapes (lists of objects, extra
+    unrelated keys included, plus inactive/non-cycling noise that must be
+    filtered out) produces a non-empty `peloton_classes.md` for a history
+    tag like "Power Zone" — this is exactly the case that silently produced
+    "class catalog unavailable" on the BO's real account before this fix."""
+    ids = {_insert_peloton_ride(db, "1", "2026-10-01T07:00:00+00:00", "Power Zone")}
+    metadata = {
+        "class_types": [
+            {
+                "id": "pz-id", "name": "Power Zone", "display_name": "Power Zone",
+                "fitness_discipline": "cycling", "is_active": True, "list_order": 9,
+                "standalone_display_name": "Power Zone", "source_of_save": "class",
+            },
+            {
+                "id": "warmup-id", "name": "Warm Up Ride", "display_name": "Warm Up",
+                "fitness_discipline": "cycling", "is_active": False, "list_order": 30,
+            },
+            {
+                "id": "yoga-id", "name": "Yoga Flow", "display_name": "Yoga Flow",
+                "fitness_discipline": "yoga", "is_active": True, "list_order": 2,
+            },
+        ],
+        "instructors": [
+            {
+                "id": "inst-1", "name": "Matt Wilpers", "first_name": "Matt",
+                "fitness_disciplines": ["cycling"], "image_url": "https://example/x.png", "bio": "...",
+            },
+        ],
+    }
+    catalog = FakeCatalog(
+        metadata=metadata,
+        search_responses={("pz-id", 2700): _archived(_class("class-1"))},
+    )
+
+    data = classes.build(db, ids, as_of=date(2026, 10, 10), catalog=catalog)
+    md = classes.render_md(data)
+
+    assert data["status"] == "ok"
+    section = next(s for s in data["sections"] if s["duration_min"] == 45 and s["class_type"] == "Power Zone")
+    assert section["status"] == "ok"
+    assert section["classes"][0]["instructor"] == "Matt Wilpers"
+    assert "class catalog unavailable" not in md.lower()
+    assert "Power Zone" in md
 
 
 # --- empty data[] / failures -------------------------------------------------
@@ -219,7 +312,22 @@ def test_build_metadata_failure_is_unavailable(db):
 
 
 def test_build_metadata_malformed_is_unavailable(db):
-    catalog = FakeCatalog(metadata={"class_types": "not a dict"})
+    catalog = FakeCatalog(metadata={"class_types": "not a list"})
+
+    data = classes.build(db, set(), as_of=date(2026, 10, 10), catalog=catalog)
+
+    assert data["status"] == "unavailable"
+
+
+def test_build_metadata_dict_shaped_class_types_is_unavailable(db):
+    # Regression: the real API returns class_types/instructors as lists
+    # (BO's live capture), never as the id-keyed dicts this code originally
+    # assumed. A dict-shaped response must still degrade cleanly, not be
+    # silently accepted.
+    catalog = FakeCatalog(metadata={
+        "class_types": {"Power Zone": "pz-id"},
+        "instructors": {"inst-1": "Matt Wilpers"},
+    })
 
     data = classes.build(db, set(), as_of=date(2026, 10, 10), catalog=catalog)
 
@@ -299,7 +407,10 @@ def test_build_size_under_cap_with_six_types_eight_rows(db):
     ids = set()
     for i, name in enumerate(names):
         ids.add(_insert_peloton_ride(db, str(i), f"2026-10-0{(i % 9) + 1}T07:00:00+00:00", name))
-    metadata = {"class_types": {n: f"id-{n}" for n in names}, "instructors": {"inst-1": "Matt Wilpers"}}
+    metadata = {
+        "class_types": [_class_type(n, f"id-{n}") for n in names],
+        "instructors": [_instructor("inst-1", "Matt Wilpers")],
+    }
     rows = [_class(f"c{i}", title="X" * 40) for i in range(8)]
     catalog = FakeCatalog(metadata=metadata, search_responses={
         (f"id-{n}", d): _archived(*rows) for n in names for d in classes.DURATIONS_S.values()

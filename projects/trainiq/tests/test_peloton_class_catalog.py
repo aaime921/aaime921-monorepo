@@ -104,13 +104,21 @@ def _authenticated_connector(credential_store, fake):
     return connector
 
 
-# Live-evidence-shaped fixture (docs/trainiq/requirements/72-peloton-class-candidates.md):
-# GET /api/ride/metadata_mappings.
+# Live-evidence-shaped fixture (BO's real-account capture, 2026-10-10):
+# GET /api/ride/metadata_mappings returns class_types/instructors as LISTS
+# of objects, not id-keyed dicts. These two methods are thin pass-throughs
+# (they don't interpret the body), so this only has to round-trip — the
+# shape itself is interpreted by trainiq.export.classes, tested separately.
 _METADATA_MAPPINGS_RESPONSE = {
-    "class_types": {
-        "Power Zone": "pz-id", "Low Impact": "li-id", "Climb": "climb-id",
-    },
-    "instructors": {"inst-1": "Matt Wilpers", "inst-2": "Ally Love"},
+    "class_types": [
+        {"id": "pz-id", "name": "Power Zone", "fitness_discipline": "cycling", "is_active": True},
+        {"id": "li-id", "name": "Low Impact", "fitness_discipline": "cycling", "is_active": True},
+        {"id": "climb-id", "name": "Climb", "fitness_discipline": "cycling", "is_active": True},
+    ],
+    "instructors": [
+        {"id": "inst-1", "name": "Matt Wilpers"},
+        {"id": "inst-2", "name": "Ally Love"},
+    ],
 }
 
 # GET /api/v2/ride/archived.

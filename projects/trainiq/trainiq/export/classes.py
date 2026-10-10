@@ -106,6 +106,45 @@ def done_before(conn: sqlite3.Connection, primary_ids: set[int], as_of: date) ->
     return latest
 
 
+def _build_lookups(metadata: dict) -> tuple[Optional[dict], Optional[dict]]:
+    """`GET /api/ride/metadata_mappings` returns `class_types`/`instructors`
+    as **lists** of objects, not id-keyed dicts (BO's live capture against
+    the real account, 2026-10-10 — the original dict-shaped assumption was
+    never verified live and made every export say "class catalog
+    unavailable" on the real account). Returns (name -> id, id -> name);
+    either half is None if its list is missing or malformed.
+
+    `class_types` is filtered to `fitness_discipline == "cycling"` and
+    `is_active` (BO decision: bike only, and the inactive/other-discipline
+    majority of the 169 entries must never surface as a candidate)."""
+    class_types_raw = metadata.get("class_types")
+    instructors_raw = metadata.get("instructors")
+
+    class_types: Optional[dict] = None
+    if isinstance(class_types_raw, list):
+        class_types = {}
+        for item in class_types_raw:
+            if not isinstance(item, dict):
+                continue
+            if item.get("fitness_discipline") != "cycling" or not item.get("is_active"):
+                continue
+            name, type_id = item.get("name"), item.get("id")
+            if isinstance(name, str) and type_id is not None:
+                class_types[name] = type_id
+
+    instructors: Optional[dict] = None
+    if isinstance(instructors_raw, list):
+        instructors = {}
+        for item in instructors_raw:
+            if not isinstance(item, dict):
+                continue
+            instructor_id, name = item.get("id"), item.get("name")
+            if instructor_id is not None and isinstance(name, str):
+                instructors[instructor_id] = name
+
+    return class_types, instructors
+
+
 def _match_class_type_id(tag: str, class_types: dict) -> Optional[str]:
     """Case-insensitive match of a history tag against the metadata
     catalog's class-type names (the architecture doc: "Tags are matched to
@@ -163,9 +202,8 @@ def build(
     except (AuthenticationError, TransientError) as exc:
         return {"as_of": as_of.isoformat(), "status": "unavailable", "reason": str(exc), "sections": [], "unmatched_tags": [], "not_shown": []}
 
-    class_types = metadata.get("class_types") if isinstance(metadata, dict) else None
-    instructors = metadata.get("instructors") if isinstance(metadata, dict) else None
-    if not isinstance(class_types, dict) or not isinstance(instructors, dict):
+    class_types, instructors = _build_lookups(metadata) if isinstance(metadata, dict) else (None, None)
+    if class_types is None or instructors is None:
         return {"as_of": as_of.isoformat(), "status": "unavailable", "reason": "class catalog unavailable", "sections": [], "unmatched_tags": [], "not_shown": []}
 
     ranked_types = used_types(conn, primary_ids, as_of)
