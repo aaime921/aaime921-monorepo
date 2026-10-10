@@ -21,7 +21,7 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 
-from trainiq.export.data import Activity, load_activities
+from trainiq.export.data import Activity, effective_duration_s, load_activities
 from trainiq.export.fmt import fmt, md_table
 
 WEEKS = 12
@@ -96,14 +96,14 @@ def render(conn: sqlite3.Connection, primary_ids: set[int], as_of: date) -> tupl
             "week_start": week_start.isoformat(),
             "week_end": week_end.isoformat(),
             "activities": len(week_activities),
-            "duration_h": round(sum(a.duration_s for a in week_activities) / 3600, 2),
+            "duration_h": round(sum(effective_duration_s(a) for a in week_activities) / 3600, 2),
             "load": round(week_load, 1),
             "ctl": round(end_state.ctl, 1) if end_state else None,
             "atl": round(end_state.atl, 1) if end_state else None,
             "tsb": round(end_state.tsb, 1) if end_state else None,
         })
 
-    headers = ["Week", "Activities", "Duration (h)", "Load", "CTL", "ATL", "TSB"]
+    headers = ["Week", "Activities", "Moving time (h)", "Load", "CTL", "ATL", "TSB"]
     rows = [
         [
             f"{w['week_start']} – {w['week_end']}",

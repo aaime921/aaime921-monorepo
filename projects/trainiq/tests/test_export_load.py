@@ -72,6 +72,32 @@ def test_render_excludes_dedup_secondary_side_from_weekly_load(db):
     assert last_week["load"] == 100.0
 
 
+def test_render_weekly_duration_uses_moving_time(db):
+    """issue #79: a walk left running (elapsed 537 min, moving 86 min) must
+    contribute 86 min, not 537 min, to the week's "Moving time (h)" total."""
+    activity_id = insert_activity(
+        db, external_id="1", start_time="2026-10-05T07:00:00+00:00",
+        discipline="other", sport_type_raw="Walk", duration_s=537 * 60, moving_time_s=86 * 60,
+    )
+
+    _, js = load.render(db, primary_ids={activity_id}, as_of=date(2026, 10, 10))
+
+    last_week = json.loads(js)["weeks"][-1]
+    assert last_week["duration_h"] == round(86 / 60, 2)
+
+
+def test_render_weekly_duration_falls_back_to_duration_when_moving_time_missing(db):
+    activity_id = insert_activity(
+        db, external_id="1", start_time="2026-10-05T07:00:00+00:00",
+        discipline="running", duration_s=1800, moving_time_s=None,
+    )
+
+    _, js = load.render(db, primary_ids={activity_id}, as_of=date(2026, 10, 10))
+
+    last_week = json.loads(js)["weeks"][-1]
+    assert last_week["duration_h"] == round(1800 / 3600, 2)
+
+
 def test_render_no_activities_does_not_crash(db):
     md, js = load.render(db, primary_ids=set(), as_of=date(2026, 10, 10))
     payload = json.loads(js)

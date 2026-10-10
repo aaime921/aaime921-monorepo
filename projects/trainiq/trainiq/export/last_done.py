@@ -11,7 +11,7 @@ import sqlite3
 from datetime import date
 from typing import Callable, Optional
 
-from trainiq.export.data import Activity, load_activities, sport_of
+from trainiq.export.data import Activity, effective_duration_s, load_activities, sport_of
 from trainiq.export.fmt import fmt, md_table
 
 _SPORTS_IN_SCOPE = ("run", "walk", "ride")
@@ -39,7 +39,7 @@ def _row(label: str, a: Optional[Activity]) -> list[str]:
     return [
         label,
         a.start_time.date().isoformat(),
-        fmt(a.duration_s / 60, 0) + " min",
+        fmt(effective_duration_s(a) / 60, 0) + " min",
         fmt(distance_km, 2),
         fmt(a.avg_hr, 0),
         fmt(a.avg_power, 0),

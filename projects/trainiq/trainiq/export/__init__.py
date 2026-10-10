@@ -45,7 +45,9 @@ def run_export(
 
     written: list[Path] = []
 
-    written.append(_write(out_dir, "profile.md", profile.render(conn, config_path, resolved_as_of)))
+    written.append(
+        _write(out_dir, "profile.md", profile.render(conn, config_path, resolved_as_of, primary_ids))
+    )
 
     recent_md, recent_json = recent.render(conn, primary_ids, resolved_as_of)
     written.append(_write(out_dir, "recent.md", recent_md))
